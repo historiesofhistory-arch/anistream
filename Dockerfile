@@ -112,18 +112,17 @@ ENV STATIC_DIR=/app/public
 
 WORKDIR /app
 
-# Copy only the built backend bundle + its production node_modules
-# (esbuild bundles most deps, so node_modules is small — just the externals)
+# Copy ONLY the built backend bundle (esbuild bundles ALL deps inline —
+# express, cors, pino, etc. are in the 1.4MB index.mjs). The pino worker
+# files are also in dist/. No node_modules needed at runtime.
 COPY --from=backend-builder /build/api-server/dist         ./dist
 COPY --from=backend-builder /build/api-server/package.json ./package.json
 
 # Copy the built frontend (static assets)
 COPY --from=frontend-builder /build/anistream/dist/public  ./public
 
-# Install ONLY production deps for the backend (esbuild externals)
-# Use --no-frozen-lockfile for compatibility across pnpm versions
-RUN corepack enable && corepack prepare pnpm@11.21.0 --activate && \
-    pnpm install --prod --no-frozen-lockfile --ignore-scripts
+# NO pnpm install needed — esbuild bundles everything into dist/index.mjs.
+# This eliminates all catalog/lockfile/workspace resolution issues.
 
 # Healthcheck — hits the API health endpoint. Container is "healthy" once
 # Express is up and responding.
