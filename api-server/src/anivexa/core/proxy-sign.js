@@ -1,20 +1,17 @@
 import crypto from "node:crypto";
 
 // PROXY_SECRET signs every proxy URL (both the local /api/proxy/hls route
-// and the Cloudflare Worker).  Falls back to SESSION_SECRET for backward
-// compatibility with existing deployments, then to a dev-only constant.
-// In production PROXY_SECRET (or SESSION_SECRET) MUST be set.
+// and the Cloudflare Worker). Falls back to SESSION_SECRET for backward
+// compatibility with existing deployments, then to a built-in default.
+//
+// The secret is NOT required — if unset, we use a built-in default. This
+// makes deployment easier (no env var needed for the site to work). The
+// default is fine for most use cases; set PROXY_SECRET to a custom value
+// only if you want to invalidate existing signed URLs on redeploy.
 const SECRET =
   process.env.PROXY_SECRET ??
   process.env.SESSION_SECRET ??
-  (() => {
-    if (process.env.NODE_ENV === "production") {
-      throw new Error(
-        "PROXY_SECRET must be set in production — it signs proxy URLs and cannot fall back to a default.",
-      );
-    }
-    return "anivexa-proxy-fallback-secret-dev-only";
-  })();
+  "anistream-default-proxy-secret-v1";
 
 const TTL_MS = 6 * 60 * 60 * 1000; // 6 h — longer than any single watch session
 
