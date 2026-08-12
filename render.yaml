@@ -1,32 +1,56 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Render Blueprint — AniStream
 # ─────────────────────────────────────────────────────────────────────────────
-# Push this repo to GitHub, then in Render:
-#   Dashboard → New + → Blueprint → connect repo
-# Render reads this file and creates the service automatically.
-#
-# After deploy, set these in Environment tab (or uncomment `envVars` below):
-#   WEB_DOMAIN     → https://your-app.onrender.com (or your custom domain)
-#   EMBED_API_URL  → https://your-hosted-embed-api.koyeb.app (optional)
+# Quick deploy on Render:
+#   1. Push this repo to GitHub
+#   2. Go to https://dashboard.render.com → New + → Blueprint
+#   3. Connect your GitHub repo
+#   4. Render reads this file and creates the service automatically
+#   5. After deploy, set these in Environment tab (or uncomment `envVars` below):
+#        EMBED_API_URL  → https://your-hosted-embed-api.koyeb.app
+#        PROXY_SECRET   → any random string (e.g., my-secret-key-123)
+#        WEB_DOMAIN     → https://your-app.onrender.com (optional, for CORS)
 # ─────────────────────────────────────────────────────────────────────────────
+
 services:
   - type: web
     name: anistream
     runtime: docker
-    plan: free            # change to 'starter' for production
-    region: oregon        # change to your nearest region
+    plan: free            # change to 'starter' for production (no sleep)
+    region: oregon        # change to your nearest region (oregon, frankfurt, singapore, ohio)
     dockerfilePath: ./Dockerfile
     dockerContext: .
     healthCheckPath: /api/health
     autoDeploy: true
+
+    # Environment variables — Render auto-injects PORT, no need to set it.
+    # Set these in the Render dashboard after first deploy, OR uncomment
+    # the lines below to set them via the blueprint.
     envVars:
-      # Render auto-injects PORT — don't set it here.
       - key: NODE_ENV
         value: production
       - key: BASE_PATH
         value: /
-      # Set these in the Render dashboard after first deploy:
-      # - key: WEB_DOMAIN
-      #   value: https://your-app.onrender.com
+
+      # REQUIRED: Origin of your hosted embed/stream API
+      # Default (if unset): the original Koyeb URL
+      # Example: https://your-api.koyeb.app
       # - key: EMBED_API_URL
-      #   value: https://your-hosted-embed-api.koyeb.app
+      #   value: https://your-api.koyeb.app
+
+      # REQUIRED: Secret key for signing proxy URLs (any random string)
+      # - key: PROXY_SECRET
+      #   value: change-this-to-a-random-string
+
+      # OPTIONAL: Your site URL for CORS lockdown
+      # Example: https://anistream.onrender.com
+      # - key: WEB_DOMAIN
+      #   value: https://anistream.onrender.com
+
+# ─────────────────────────────────────────────────────────────────────────────
+# After deploy:
+#   1. Go to your service → Environment tab
+#   2. Add EMBED_API_URL, PROXY_SECRET, WEB_DOMAIN
+#   3. Render will auto-redeploy with the new env vars
+#   4. Your site will be live at https://<service-name>.onrender.com
+# ─────────────────────────────────────────────────────────────────────────────

@@ -10,5 +10,27 @@
     "healthcheckTimeout": 30,
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3
-  }
+  },
+  "variables": [
+    {
+      "name": "NODE_ENV",
+      "default": "production"
+    },
+    {
+      "name": "BASE_PATH",
+      "default": "/"
+    },
+    {
+      "name": "EMBED_API_URL",
+      "description": "Origin of your hosted embed/stream API (e.g., https://your-api.koyeb.app). Leave empty to use the default Koyeb URL."
+    },
+    {
+      "name": "PROXY_SECRET",
+      "description": "Secret key for signing proxy URLs. Set to any random string (e.g., my-secret-key-123). Required in production."
+    },
+    {
+      "name": "WEB_DOMAIN",
+      "description": "Your site's full URL (e.g., https://your-app.railway.app). Used for CORS lockdown. Optional."
+    }
+  ]
 }
