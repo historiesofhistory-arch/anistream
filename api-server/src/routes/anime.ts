@@ -745,10 +745,12 @@ const getDetails = mkSwr<unknown>(15 * 60_000, 5 * 60_000, async (id: string) =>
   // ── Episode count verification for big anime ──────────────────────────────
   // AniList sometimes includes specials/movies/OVAs in the episode count
   // (e.g., Doraemon shows 927 but only ~600 actual episodes are available).
-  // For big anime (>100 episodes), cross-check with just4anime's
+  // For FINISHED big anime (>100 episodes), cross-check with just4anime's
   // totalEpisodes field and use the SMALLER count (actual available episodes).
+  // For ONGOING anime, DON'T reduce the count — just4anime may just not have
+  // caught up yet (e.g., Doraemon 2005: just4anime has 687, AniList says 928).
   let verifiedEpisodeCount = m.episodes ?? null;
-  if (verifiedEpisodeCount && verifiedEpisodeCount > 100) {
+  if (verifiedEpisodeCount && verifiedEpisodeCount > 100 && m.status === "FINISHED") {
     try {
       const j4aRes = await fetch(`${J4A_API}/${m.id}?full=true`, {
         headers: {
@@ -965,57 +967,112 @@ const getEpisodes = mkSwr<unknown>(30 * 60_000, 10 * 60_000, async (id: string) 
 
   // ── TIER 1: just4anime.online (primary) ────────────────────────────────
   const j4aResult = await fetchEpisodesFromJust4Anime(anilistId);
+
+  // ── ALSO query AniList for nextAiringEpisode ─────────────────────────────
+  // just4anime's database may be incomplete (e.g., Doraemon 2005 has 687 eps
+  // on just4anime but AniList says next is ep 928). We need AniList's
+  // nextAiringEpisode data to:
+  //   1. Show the correct "ongoing" status
+  //   2. Add placeholder episodes for the gap (just4anime count → AniList count)
+  //   3. Attach the countdown timer to the correct next episode
+  let anilistNextAiring: { episode: number; airsAt: number } | null = null;
+  let anilistAiredCount = 0;
+  try {
+    const md = await alQuery<{
+      Media: {
+        episodes:          number | null;
+        status:            string | null;
+        nextAiringEpisode: { episode: number; timeUntilAiring: number } | null;
+      }
+    }>(
+      `query($id: Int) {
+        Media(id: $id, type: ANIME) {
+          episodes status
+          nextAiringEpisode { episode timeUntilAiring }
+        }
+      }`,
+      { id: anilistId },
+    );
+    const { episodes: totalEps, status, nextAiringEpisode } = md.Media;
+    if (nextAiringEpisode) {
+      anilistNextAiring = {
+        episode: nextAiringEpisode.episode,
+        airsAt:  Date.now() + nextAiringEpisode.timeUntilAiring * 1000,
+      };
+      anilistAiredCount = nextAiringEpisode.episode - 1;
+    } else if (status === "FINISHED" || status === "CANCELLED") {
+      anilistAiredCount = totalEps ?? 0;
+    } else {
+      anilistAiredCount = totalEps ?? 0;
+    }
+  } catch {
+    // AniList query failed — continue with just4anime data alone
+  }
+
   if (j4aResult) {
-    return j4aResult;
+    // ── MERGE just4anime episodes with AniList nextAiring ─────────────────
+    // If AniList says there are more episodes than just4anime has
+    // (e.g., just4anime has 687, AniList says next is 928), fill the gap
+    // with placeholder episodes (no title/thumbnail but marked as aired).
+    // Also use AniList's nextAiring data if just4anime doesn't have it.
+    const j4aEps = j4aResult.episodes as any[];
+    const j4aCount = j4aEps.length;
+    const mergedNextAiring = j4aResult.nextAiring || anilistNextAiring;
+
+    // If AniList knows about more episodes than just4anime has, add placeholders
+    if (anilistAiredCount > j4aCount) {
+      for (let num = j4aCount + 1; num <= anilistAiredCount; num++) {
+        j4aEps.push({
+          id:        num,
+          number:    num,
+          title:     null,
+          thumbnail: null,
+          filler:    false,
+          airDate:   null,
+          aired:     true,
+          airsAt:    null,
+          hasSub:    true,
+          hasDub:    true,
+        });
+      }
+    }
+
+    // If AniList has a nextAiring episode that's beyond our current list,
+    // add it as an upcoming episode with the countdown timer
+    if (anilistNextAiring && anilistNextAiring.episode > j4aEps.length) {
+      j4aEps.push({
+        id:        anilistNextAiring.episode,
+        number:    anilistNextAiring.episode,
+        title:     null,
+        thumbnail: null,
+        filler:    false,
+        airDate:   null,
+        aired:     false,
+        airsAt:    anilistNextAiring.airsAt,
+        hasSub:    true,
+        hasDub:    true,
+      });
+    }
+
+    // Update any existing episode's airsAt with AniList's nextAiring if it matches
+    if (anilistNextAiring) {
+      const nextEp = j4aEps.find(e => e.number === anilistNextAiring!.episode);
+      if (nextEp && !nextEp.aired) {
+        nextEp.airsAt = anilistNextAiring.airsAt;
+      }
+    }
+
+    return { episodes: j4aEps, nextAiring: mergedNextAiring };
   }
 
   // ── TIER 2: AniList + Kitsu (fallback — original implementation) ────────
-  // 1. AniList — authoritative source for aired/upcoming status
-  const md = await alQuery<{
-    Media: {
-      idMal:             number | null;
-      episodes:          number | null;
-      status:            string | null;
-      nextAiringEpisode: { episode: number; timeUntilAiring: number } | null;
-    }
-  }>(
-    `query($id: Int) {
-      Media(id: $id, type: ANIME) {
-        idMal episodes status
-        nextAiringEpisode { episode timeUntilAiring }
-      }
-    }`,
+  // (reached when just4anime failed entirely)
+  // Use the AniList data we already fetched above
+  const { idMal: malId } = await alQuery<{ Media: { idMal: number | null } }>(
+    `query($id: Int) { Media(id: $id, type: ANIME) { idMal } }`,
     { id: anilistId },
-  );
+  ).then(d => d.Media).catch(() => ({ idMal: null }));
 
-  const { idMal: malId, episodes: totalEpsField, status, nextAiringEpisode } = md.Media;
-
-  // 2. Determine aired count — primary logic, 100% from AniList
-  // FINISHED/CANCELLED → all planned eps are aired
-  // RELEASING with nextAiringEpisode → episode N is next, so N-1 have aired
-  // RELEASING without nextAiringEpisode → treat all known eps as aired
-  // NOT_YET_RELEASED → 0
-  let airedCount: number;
-  if (status === "FINISHED" || status === "CANCELLED") {
-    airedCount = totalEpsField ?? 0;
-  } else if (nextAiringEpisode) {
-    airedCount = nextAiringEpisode.episode - 1;
-  } else {
-    airedCount = totalEpsField ?? 0;
-  }
-
-  // Absolute timestamp — computed at fetch time so cached responses
-  // still have a correct countdown when served later
-  const nextAiring = nextAiringEpisode
-    ? {
-        episode: nextAiringEpisode.episode,
-        airsAt:  Date.now() + nextAiringEpisode.timeUntilAiring * 1000,
-      }
-    : null;
-
-  // 3. Kitsu via ARM — best-effort titles + thumbnails
-  //    Pipeline: AniList idMal → ARM (MAL source) → Kitsu ID → Kitsu episodes
-  //    Falls back silently to numbered stubs when mapping is missing.
   let kitsuMap = new Map<number, KitsuEp>();
   if (malId) {
     const kitsuId = await armKitsuId(malId);
@@ -1024,16 +1081,13 @@ const getEpisodes = mkSwr<unknown>(30 * 60_000, 10 * 60_000, async (id: string) 
     }
   }
 
-  // 4. Build episode list
-  //    Show: aired episodes + the ONE immediate upcoming episode (with countdown)
-  //    Future episodes beyond that are intentionally hidden.
-  const totalToShow = airedCount + (nextAiring ? 1 : 0);
-  const count       = Math.max(totalToShow, 1); // always show at least 1
+  const totalToShow = anilistAiredCount + (anilistNextAiring ? 1 : 0);
+  const count       = Math.max(totalToShow, 1);
 
   const episodes = Array.from({ length: count }, (_, i) => {
     const num    = i + 1;
     const kitsu  = kitsuMap.get(num);
-    const isAired = num <= airedCount;
+    const isAired = num <= anilistAiredCount;
     return {
       id:        num,
       number:    num,
@@ -1042,14 +1096,13 @@ const getEpisodes = mkSwr<unknown>(30 * 60_000, 10 * 60_000, async (id: string) 
       filler:    false,
       airDate:   kitsu?.airdate  ?? null,
       aired:     isAired,
-      // Attach countdown only to the single next-airing episode
-      airsAt:    (!isAired && nextAiring?.episode === num) ? nextAiring.airsAt : null,
+      airsAt:    (!isAired && anilistNextAiring?.episode === num) ? anilistNextAiring.airsAt : null,
       hasSub:    true,
       hasDub:    true,
     };
   });
 
-  return { episodes, nextAiring };
+  return { episodes, nextAiring: anilistNextAiring };
 });
 
 router.get("/anime/:id/episodes", async (req: Request, res: Response) => {
