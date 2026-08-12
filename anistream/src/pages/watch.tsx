@@ -1,6 +1,7 @@
 import { useParams, Link, useLocation } from "wouter";
 import { customFetch } from "../lib/custom-fetch";
 import { apiUrl } from "../lib/api";
+import { saveToContinueWatching } from "../lib/continue-watching";
 import { useQuery, useQueries, useQueryClient } from "@tanstack/react-query";
 import {
   useState, useEffect, useRef, useMemo, useCallback, forwardRef,
@@ -466,6 +467,24 @@ export function Watch() {
     }, 1500); // slight delay so it never competes with the current episode's own request
     return () => { clearTimeout(timer); controller.abort(); };
   }, [stream?.streamUrl, selectedEpisodeId, activeProvider, selectedLang, episodes, id]);
+
+  // ── Save to Continue Watching (localStorage) ──────────────────────────────
+  // When the stream URL is ready, save this episode to the user's local
+  // continue watching history. All data stays in the browser — no server
+  // storage, no account needed. The homepage reads this and shows a
+  // "Continue Watching" row.
+  useEffect(() => {
+    if (!stream?.streamUrl || !selectedEpisodeId) return;
+    const ep = episodes.find((e) => e.id === selectedEpisodeId);
+    if (!ep) return;
+    saveToContinueWatching({
+      animeId:       id,
+      episodeId:     selectedEpisodeId,
+      episodeNumber: ep.number,
+      title:         animeDetails?.title || "",
+      posterUrl:     animeDetails?.posterUrl || animeDetails?.bannerUrl || "",
+    });
+  }, [stream?.streamUrl, selectedEpisodeId, id, episodes, animeDetails?.title, animeDetails?.posterUrl, animeDetails?.bannerUrl]);
 
   // ── Episode navigation ───────────────────────────────────────────────────
 

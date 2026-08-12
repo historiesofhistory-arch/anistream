@@ -1,10 +1,11 @@
 import { Link, useLocation } from "wouter";
-import { Play, Info, ChevronLeft, ChevronRight, Tv2, Film, Calendar, Clock, Zap, Star, Plus, Flame, Trophy, TrendingUp, Sparkles, Swords } from "lucide-react";
+import { Play, Info, ChevronLeft, ChevronRight, Tv2, Film, Calendar, Clock, Zap, Star, Plus, Flame, Trophy, TrendingUp, Sparkles, Swords, History } from "lucide-react";
 import { AnimeCard } from "../components/anime-card";
 import { RowSlider } from "../components/row-slider";
 import { useQuery } from "@tanstack/react-query";
 import { cn } from "../lib/utils";
 import { apiUrl } from "../lib/api";
+import { useContinueWatching } from "../lib/continue-watching";
 import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { squishyTap } from "../lib/transitions";
@@ -417,6 +418,83 @@ function UpcomingSection() {
   );
 }
 
+// ── Continue Watching Section ─────────────────────────────────────────────────
+// Shows recently watched anime in a video-player-style card (16:9 aspect
+// ratio with poster background + play button overlay + episode number badge).
+// Data comes from localStorage — no server storage.
+function ContinueWatchingSection() {
+  const entries = useContinueWatching();
+
+  if (entries.length === 0) return null;
+
+  return (
+    <section>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="section-heading font-display text-[1.05rem] font-bold text-white flex items-center gap-2">
+          <History className="w-4 h-4 text-primary shrink-0" />
+          Continue Watching
+        </h2>
+      </div>
+      <div className="flex items-stretch gap-3 sm:gap-4 overflow-x-auto no-scrollbar pb-2 -mx-4 px-4 sm:mx-0 sm:px-0">
+        {entries.map((entry, i) => (
+          <Link
+            key={`${entry.animeId}-${entry.episodeId}`}
+            href={`/watch/${entry.animeId}/${entry.episodeId}`}
+            className="group relative shrink-0 w-[240px] sm:w-[280px] block overflow-hidden rounded-xl border border-white/[0.06] hover:border-primary/30 transition-all bg-black"
+          >
+            {/* 16:9 aspect video-style card */}
+            <div className="relative aspect-video overflow-hidden">
+              {entry.posterUrl ? (
+                <img
+                  src={entry.posterUrl}
+                  alt={entry.title}
+                  loading="lazy"
+                  className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                />
+              ) : (
+                <div className="w-full h-full bg-white/[0.04] flex items-center justify-center">
+                  <Tv2 className="w-8 h-8 text-white/20" />
+                </div>
+              )}
+
+              {/* Gradient overlay for readability */}
+              <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent" />
+
+              {/* Play button overlay */}
+              <div className="absolute inset-0 flex items-center justify-center">
+                <motion.div
+                  whileHover={{ scale: 1.1 }}
+                  whileTap={{ scale: 0.95 }}
+                  className="w-12 h-12 rounded-full bg-primary/90 backdrop-blur-sm flex items-center justify-center shadow-lg group-hover:bg-primary transition-colors"
+                >
+                  <Play className="w-4 h-4 fill-white text-white ml-0.5" />
+                </motion.div>
+              </div>
+
+              {/* Episode number badge — top right */}
+              <div className="absolute top-2 right-2 px-2 py-0.5 rounded-md bg-black/70 backdrop-blur-sm border border-white/10">
+                <span className="text-[10px] font-black tabular-nums text-white">
+                  EP {entry.episodeNumber}
+                </span>
+              </div>
+
+              {/* Title + info at bottom */}
+              <div className="absolute bottom-0 left-0 right-0 p-3">
+                <p className="font-bold text-sm leading-tight line-clamp-1 text-white">
+                  {entry.title}
+                </p>
+                <p className="text-[11px] text-white/50 mt-0.5">
+                  Episode {entry.episodeNumber}
+                </p>
+              </div>
+            </div>
+          </Link>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 // ── Skeleton ───────────────────────────────────────────────────────────────────
 const CARD_W = "w-[140px] sm:w-[158px] md:w-[168px]";
 
@@ -470,6 +548,9 @@ export function Home() {
 
       {/* ── Main content ── */}
       <div className="max-w-screen-xl mx-auto w-full px-4 sm:px-6 py-8 space-y-12">
+
+        {/* ── Continue Watching (localStorage based, no server storage) ── */}
+        <ContinueWatchingSection />
 
         {topSections.map((section, i) => {
           const meta = sectionMeta(section.title);
