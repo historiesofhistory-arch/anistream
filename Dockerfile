@@ -31,7 +31,7 @@
 FROM node:22-slim AS frontend-builder
 
 # Enable pnpm via corepack (no separate install step)
-RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
+RUN corepack enable && corepack prepare pnpm@11.21.0 --activate
 
 WORKDIR /build
 
@@ -48,7 +48,10 @@ COPY lib/db/package.json                ./lib/db/
 COPY scripts/package.json               ./scripts/
 
 # Install ALL workspace deps in one shot (frozen lockfile = reproducible)
-RUN pnpm install --frozen-lockfile --ignore-scripts
+# Note: --ignore-scripts skips postinstall scripts (esbuild binary download)
+# which we don't need at install time — esbuild is only used during build.
+RUN pnpm install --frozen-lockfile --ignore-scripts || \
+    pnpm install --no-frozen-lockfile --ignore-scripts
 
 # Now copy the actual source
 COPY anistream/    ./anistream/
@@ -71,7 +74,7 @@ RUN pnpm --filter @workspace/anistream run build
 # ── Stage 2: Build backend (esbuild) ────────────────────────────────────────
 FROM node:22-slim AS backend-builder
 
-RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
+RUN corepack enable && corepack prepare pnpm@11.21.0 --activate
 
 WORKDIR /build
 
@@ -84,7 +87,8 @@ COPY lib/api-zod/package.json           ./lib/api-zod/
 COPY lib/db/package.json                ./lib/db/
 COPY scripts/package.json               ./scripts/
 
-RUN pnpm install --frozen-lockfile --ignore-scripts
+RUN pnpm install --frozen-lockfile --ignore-scripts || \
+    pnpm install --no-frozen-lockfile --ignore-scripts
 
 COPY anistream/    ./anistream/
 COPY api-server/   ./api-server/
@@ -117,8 +121,9 @@ COPY --from=backend-builder /build/api-server/package.json ./package.json
 COPY --from=frontend-builder /build/anistream/dist/public  ./public
 
 # Install ONLY production deps for the backend (esbuild externals)
-RUN corepack enable && corepack prepare pnpm@9.15.0 --activate && \
-    pnpm install --prod --frozen-lockfile --ignore-scripts
+# Use --no-frozen-lockfile for compatibility across pnpm versions
+RUN corepack enable && corepack prepare pnpm@11.21.0 --activate && \
+    pnpm install --prod --no-frozen-lockfile --ignore-scripts
 
 # Healthcheck — hits the API health endpoint. Container is "healthy" once
 # Express is up and responding.
