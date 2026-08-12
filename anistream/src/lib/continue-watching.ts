@@ -11,7 +11,8 @@ import { useState, useEffect, useCallback } from "react";
 // All data lives in the browser's localStorage. No server calls, no account,
 // no DB. If the user clears browser data, history is gone (intentional).
 //
-// The history is capped at 24 entries — older entries are pruned.
+// The history is capped at 50 entries. If localStorage quota is exceeded,
+// we progressively remove the OLDEST entries and retry until it fits.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface ContinueWatchingEntry {
@@ -24,7 +25,7 @@ export interface ContinueWatchingEntry {
 }
 
 const STORAGE_KEY = "anistream:continue-watching";
-const MAX_ENTRIES = 24;
+const MAX_ENTRIES = 50;
 
 function readFromStorage(): ContinueWatchingEntry[] {
   try {
@@ -43,11 +44,27 @@ function readFromStorage(): ContinueWatchingEntry[] {
   }
 }
 
-function writeToStorage(entries: ContinueWatchingEntry[]) {
+function writeToStorage(entries: ContinueWatchingEntry[]): boolean {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
+    return true;
   } catch {
-    // localStorage might be full or disabled — fail silently
+    // localStorage is full — progressively remove oldest entries and retry
+    let trimmed = [...entries];
+    while (trimmed.length > 1) {
+      trimmed.pop(); // remove last (oldest) entry
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));
+        return true;
+      } catch {
+        // still full, keep trimming
+      }
+    }
+    // Even 1 entry doesn't fit — clear everything
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {}
+    return false;
   }
 }
 
@@ -55,6 +72,7 @@ function writeToStorage(entries: ContinueWatchingEntry[]) {
  * Save an episode to continue watching history.
  * If the same anime already exists, update its episode + timestamp.
  * The list is sorted by most recently watched first.
+ * If localStorage is full, oldest entries are removed to make room.
  */
 export function saveToContinueWatching(entry: Omit<ContinueWatchingEntry, "watchedAt">) {
   const entries = readFromStorage();
@@ -62,8 +80,15 @@ export function saveToContinueWatching(entry: Omit<ContinueWatchingEntry, "watch
   const filtered = entries.filter(e => e.animeId !== entry.animeId);
   // Prepend the new entry
   const newEntry: ContinueWatchingEntry = { ...entry, watchedAt: Date.now() };
-  const updated = [newEntry, ...filtered].slice(0, MAX_ENTRIES);
-  writeToStorage(updated);
+  let updated = [newEntry, ...filtered].slice(0, MAX_ENTRIES);
+
+  // Try to write — if it fails (quota), writeToStorage handles trimming
+  const success = writeToStorage(updated);
+  if (!success) {
+    // Last resort: try with just the new entry alone
+    writeToStorage([newEntry]);
+  }
+
   // Dispatch a custom event so other components (like the homepage) can
   // reactively update without re-reading localStorage on a timer.
   window.dispatchEvent(new CustomEvent("anistream:continue-watching-updated"));

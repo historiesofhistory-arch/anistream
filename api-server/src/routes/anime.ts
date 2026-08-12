@@ -724,6 +724,7 @@ const DETAILS_Q = `query($id: Int) {
     description(asHtml: false)
     genres format status episodes averageScore seasonYear
     startDate { year month day }
+    nextAiringEpisode { episode timeUntilAiring }
     studios(isMain: true) { nodes { name } }
     relations {
       edges {
@@ -740,6 +741,51 @@ const DETAILS_Q = `query($id: Int) {
 const getDetails = mkSwr<unknown>(15 * 60_000, 5 * 60_000, async (id: string) => {
   const d = await alQuery<{ Media: AlMedia }>(DETAILS_Q, { id: Number(id) });
   const m = d.Media;
+
+  // ── Episode count verification for big anime ──────────────────────────────
+  // AniList sometimes includes specials/movies/OVAs in the episode count
+  // (e.g., Doraemon shows 927 but only ~600 actual episodes are available).
+  // For big anime (>100 episodes), cross-check with just4anime's
+  // totalEpisodes field and use the SMALLER count (actual available episodes).
+  let verifiedEpisodeCount = m.episodes ?? null;
+  if (verifiedEpisodeCount && verifiedEpisodeCount > 100) {
+    try {
+      const j4aRes = await fetch(`${J4A_API}/${m.id}?full=true`, {
+        headers: {
+          "User-Agent": UA,
+          "Accept": "application/json",
+          "Referer": "https://just4anime.online/",
+        },
+      });
+      if (j4aRes.ok) {
+        const j4aJson = await j4aRes.json() as { success?: boolean; data?: { totalEpisodes?: number } };
+        if (j4aJson.success && j4aJson.data?.totalEpisodes) {
+          const j4aCount = j4aJson.data.totalEpisodes;
+          // Use the smaller count — just4anime has the actual available episodes
+          if (j4aCount < verifiedEpisodeCount) {
+            verifiedEpisodeCount = j4aCount;
+          }
+        }
+      }
+    } catch {
+      // just4anime check failed — keep AniList's count (no harm)
+    }
+  }
+
+  // ── Next airing episode for countdown timer ───────────────────────────────
+  // AniList returns `timeUntilAiring` in seconds from NOW. Convert to an
+  // absolute timestamp so cached responses still have a correct countdown
+  // when served later.
+  const nextAiringEpisode = (m as AlMedia & {
+    nextAiringEpisode?: { episode: number; timeUntilAiring: number } | null;
+  }).nextAiringEpisode;
+  const nextAiring = nextAiringEpisode
+    ? {
+        episode: nextAiringEpisode.episode,
+        airsAt:  Date.now() + nextAiringEpisode.timeUntilAiring * 1000,
+      }
+    : null;
+
   return {
     id:           m.id,
     malId:        m.idMal ?? null,
@@ -753,9 +799,10 @@ const getDetails = mkSwr<unknown>(15 * 60_000, 5 * 60_000, async (id: string) =>
     type:         m.format ?? null,
     year:         m.seasonYear ?? m.startDate?.year ?? null,
     status:       m.status ?? null,
-    episodeCount: m.episodes ?? null,
+    episodeCount: verifiedEpisodeCount,
     rating:       m.averageScore ? +(m.averageScore / 10).toFixed(1) : null,
     studio:       m.studios?.nodes?.[0]?.name ?? null,
+    nextAiring,
   };
 });
 

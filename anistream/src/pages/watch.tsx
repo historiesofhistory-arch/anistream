@@ -22,7 +22,7 @@ import "@vidstack/react/player/styles/default/layouts/video.css";
 import {
   Play, AlertCircle, ChevronLeft, Layers,
   Headphones, SkipForward, SkipBack, Tv2,
-  ChevronDown, X, ChevronsRight, Globe, Menu, Lock, Star, Clock,
+  ChevronDown, X, ChevronsRight, Globe, Menu, Lock, Star, Clock, Clock3,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 
@@ -1045,6 +1045,13 @@ export function Watch() {
                 )}
                 {currentEp?.filler && (
                   <span className="px-1 py-0.5 bg-orange-500/20 text-orange-400 text-[9px] font-black uppercase tracking-widest rounded-sm">Filler</span>
+                )}
+                {/* Next episode countdown — shows when nextAiring data is available */}
+                {episodesData?.nextAiring && (
+                  <span className="flex items-center gap-1 text-[10px] font-medium text-emerald-400/80">
+                    <Clock3 className="w-3 h-3" />
+                    Next EP {episodesData.nextAiring.episode} in {formatCountdown(Math.max(0, episodesData.nextAiring.airsAt - now))}
+                  </span>
                 )}
               </div>
             </div>

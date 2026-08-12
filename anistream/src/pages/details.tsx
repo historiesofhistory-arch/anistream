@@ -1,6 +1,6 @@
 import { useParams, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Play, ChevronLeft, Star, Calendar, ChevronDown, ChevronUp,
@@ -15,8 +15,41 @@ interface AnimeDetails {
   posterUrl: string; bannerUrl: string | null; genres: string[];
   type: string | null; year: number | null; status: string | null;
   episodeCount: number | null; rating: number | null; studio?: string | null;
+  nextAiring?: { episode: number; airsAt: number } | null;
 }
 interface Season { id: number; title: string; isCurrent: boolean; posterUrl?: string | null; }
+
+// ── Countdown Timer ──────────────────────────────────────────────────────────
+// Shows "Next EP X in Yd Zh Wm Vs" — updates every second.
+// Format:
+//   > 24h: "Xd Yh"
+//   1-24h: "Xh Ym"
+//   < 1h:  "Xm Ys" (with seconds for urgency)
+function formatCountdown(ms: number): string {
+  if (ms <= 0) return "Airing now";
+  const s = Math.floor(ms / 1000);
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (d > 0)  return `${d}d ${h}h`;
+  if (h > 0)  return `${h}h ${String(m).padStart(2, "0")}m`;
+  return `${m}m ${String(sec).padStart(2, "0")}s`;
+}
+
+function CountdownTimer({ airsAt, episode }: { airsAt: number; episode: number }) {
+  const [remaining, setRemaining] = useState(() => airsAt - Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setRemaining(airsAt - Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [airsAt]);
+  return (
+    <span className="flex items-center gap-1.5 text-[11px] font-medium text-emerald-400 border border-emerald-500/20 bg-emerald-500/5 px-3 py-1 rounded-full">
+      <Clock className="w-3 h-3" />
+      EP {episode} in {formatCountdown(remaining)}
+    </span>
+  );
+}
 
 function useAnimeDetails(id: number) {
   return useQuery<AnimeDetails>({
@@ -245,6 +278,16 @@ export function Details() {
                 <Users className="w-3 h-3" />{details.studio}
               </span>
             )}
+          </div>
+        )}
+
+        {/* ── Next Episode Countdown Timer ── */}
+        {details?.nextAiring && (
+          <div className="flex justify-center mt-3">
+            <CountdownTimer
+              airsAt={details.nextAiring.airsAt}
+              episode={details.nextAiring.episode}
+            />
           </div>
         )}
       </div>
