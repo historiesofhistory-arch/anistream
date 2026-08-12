@@ -1,0 +1,48 @@
+# ── .dockerignore ──────────────────────────────────────────────────────────
+# Keeps Docker build context small and fast by excluding heavy / irrelevant
+# paths. Anything matched here is NOT sent to the Docker daemon during build.
+
+# Node / pnpm
+**/node_modules
+**/.pnpm-store
+**/.local
+**/dist
+**/build
+**/.vite
+**/.turbo
+**/.cache
+
+# Version control
+**/.git
+**/.gitignore
+**/.gitattributes
+
+# IDE / editor
+**/.vscode
+**/.idea
+**/*.swp
+**/.DS_Store
+
+# Logs / tmp
+**/*.log
+**/tmp
+**/.tmp
+
+# Environment (don't bake secrets into images — mount at runtime instead)
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.production.example
+
+# Project-specific bloat
+**/attached_assets
+**/mockup-sandbox
+**/coverage
+**/.next
+**/tsconfig.tsbuildinfo
+
+# Docs / metadata that aren't needed at runtime
+**/README.md
+**/replit.md
+**/.replit
+**/replit.nix

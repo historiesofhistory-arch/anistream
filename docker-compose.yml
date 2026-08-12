@@ -1,0 +1,41 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# AniStream — docker-compose.yml (local production testing)
+# ─────────────────────────────────────────────────────────────────────────────
+# Builds the Dockerfile and runs the full app (frontend + API) in one container.
+#
+# Usage:
+#   docker compose up --build
+#
+# Then visit: http://localhost:8080
+#
+# For Render / Railway deployment, you do NOT need this file — just push the
+# repo and the platform auto-detects the Dockerfile.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  anistream:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: anistream
+    ports:
+      # HOST:CONTAINER — Render/Railway ignore this and use their own port
+      # mapping, but for local `docker compose up` we expose 8080.
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      # Override .env values for local docker-compose testing.
+      # Render/Railway will inject their own PORT automatically.
+      - PORT=8080
+      - NODE_ENV=production
+      - STATIC_DIR=/app/public
+      # Set your domain here for local testing of CORS lockdown:
+      # - WEB_DOMAIN=http://localhost:8080
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3

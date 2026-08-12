@@ -1,0 +1,32 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Render Blueprint — AniStream
+# ─────────────────────────────────────────────────────────────────────────────
+# Push this repo to GitHub, then in Render:
+#   Dashboard → New + → Blueprint → connect repo
+# Render reads this file and creates the service automatically.
+#
+# After deploy, set these in Environment tab (or uncomment `envVars` below):
+#   WEB_DOMAIN     → https://your-app.onrender.com (or your custom domain)
+#   EMBED_API_URL  → https://your-hosted-embed-api.koyeb.app (optional)
+# ─────────────────────────────────────────────────────────────────────────────
+services:
+  - type: web
+    name: anistream
+    runtime: docker
+    plan: free            # change to 'starter' for production
+    region: oregon        # change to your nearest region
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      # Render auto-injects PORT — don't set it here.
+      - key: NODE_ENV
+        value: production
+      - key: BASE_PATH
+        value: /
+      # Set these in the Render dashboard after first deploy:
+      # - key: WEB_DOMAIN
+      #   value: https://your-app.onrender.com
+      # - key: EMBED_API_URL
+      #   value: https://your-hosted-embed-api.koyeb.app

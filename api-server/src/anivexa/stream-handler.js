@@ -1,0 +1,267 @@
+/**
+ * Anivexa streaming bridge.
+ *
+ * AniNeko and AniZone were removed: both resolve to CDNs that are
+ * fundamentally incompatible with the Cloudflare Worker HLS proxy —
+ * AniNeko's signed CDN URLs are locked to the ASN that requested them
+ * (they embed `asn=<our-network>` in the signature, so any edge proxy on a
+ * different network gets a 403 no matter what headers it sends), and
+ * AniZone's CDN sits behind Cloudflare itself, which blocks/challenges
+ * Cloudflare-Worker-to-Cloudflare-origin traffic as bot activity. Neither
+ * is fixable by tweaking the proxy — confirmed by fetching both CDNs
+ * directly (works) vs. through the Worker (403 / Cloudflare challenge).
+ *
+ * Only 3 providers are active now: AniDB App (the only real scraper —
+ * curl-based session scraping of anidb.app), VidWish (embed-only, no HLS
+ * extraction), and Reanime (embed-only, returns FlixCloud.cc iframe URLs
+ * directly rather than replicating Reanime's WASM-based stream-URL
+ * decryption, which is fragile and unnecessary when the iframe works fine
+ * on its own). With only one real scraper in the mix, episode fetching
+ * stays fast — no more racing/falling back through slow scrapers.
+ */
+// @ts-nocheck
+import * as anidbappMod  from "./providers/anidbapp.js";
+import * as ainicoMod    from "./providers/aninico.js";
+import * as coreMod      from "./providers/core.js";
+import * as reanimeMod   from "./providers/reanime.js";
+import * as vidstreamMod from "./providers/vidstream.js";
+import { signProxyUrl }  from "./core/proxy-sign.js";
+import { createToken }   from "./core/embed-token-store.js";
+
+/**
+ * Wraps any third-party embed URL in our own /api/embed-proxy endpoint so
+ * the browser never sees the upstream domain (Koyeb, FlixCloud, etc.).
+ *
+ * Instead of encoding the URL as a base64url query parameter (decodable by
+ * anyone reading the network tab), we store it server-side under a random
+ * opaque token.  The token expires after 4 hours; the Koyeb/FlixCloud domain
+ * is never transmitted to the client in any form.
+ */
+function buildEmbedProxyUrl(rawUrl) {
+  const token = createToken(rawUrl);
+  return `/api/embed-proxy?t=${token}`;
+}
+
+const PROVIDERS = [
+  { name: "core",      handler: coreMod.default,       getAudioOptions: coreMod.getAudioOptions      },
+  { name: "anidbapp",  handler: anidbappMod.default,   getAudioOptions: anidbappMod.getAudioOptions  },
+  { name: "aninico",   handler: ainicoMod.default,      getAudioOptions: ainicoMod.getAudioOptions    },
+  { name: "reanime",   handler: reanimeMod.default,     getAudioOptions: reanimeMod.getAudioOptions   },
+  { name: "vidstream", handler: vidstreamMod.default,   getAudioOptions: vidstreamMod.getAudioOptions },
+];
+
+// Core is the recommended default — Koyeb-hosted embed with
+// sub, dub, and hsub support.
+export const DEFAULT_PROVIDER = "core";
+
+// Human-readable labels — short, single-word, matching the hardcoded tabs.
+export const PROVIDER_LABELS = {
+  core:      "Core",
+  anidbapp:  "AniDB",
+  aninico:   "AniNico",
+  reanime:   "ReAnime",
+  vidstream: "VidStream",
+};
+
+// Fallback order — Core first (default/recommended), then VidStream,
+// then ReAnime, then AniDB (real scraper), then AniNico.
+const FALLBACK_ORDER = ["core", "vidstream", "reanime", "anidbapp", "aninico"];
+
+function getProvider(name) {
+  return PROVIDERS.find((p) => p.name === name) ?? null;
+}
+
+// Route a direct HLS/mp4 URL through our own same-origin proxy (see
+// routes/proxy.ts) so the browser doesn't need to (and can't) set a custom
+// Referer header itself. The URL is signed (see core/proxy-sign.js) so the
+// proxy can trust it regardless of which random CDN hostname the provider
+// mirror happened to hand out this time.
+function buildProxiedUrl(url, referer) {
+  return signProxyUrl(url, referer);
+}
+
+/**
+ * Pull a direct HLS URL (+ referer, if the entry carries one) out of any
+ * provider's JSON response shape. Tags the result with its real `type` so
+ * the caller knows whether it's an actual media URL (proxy it) or a
+ * third-party embed page (use it as an iframe src instead — proxying an
+ * HTML page through the HLS/media proxy just serves junk to the player,
+ * which looked like a "stuck" server to the user).
+ */
+function extractStreamUrl(data) {
+  if (typeof data.stream_url === "string" && data.stream_url.startsWith("http")) return { url: data.stream_url, referer: data.referer ?? null, type: "hls" };
+  if (typeof data.url === "string" && data.url.startsWith("http")) return { url: data.url, referer: data.referer ?? null, type: "hls" };
+  if (typeof data.hls === "string" && data.hls.startsWith("http")) return { url: data.hls, referer: data.referer ?? null, type: "hls" };
+  if (typeof data.streamUrl === "string" && data.streamUrl.startsWith("http")) return { url: data.streamUrl, referer: data.referer ?? null, type: "hls" };
+
+  const arr =
+    Array.isArray(data.streams) ? data.streams :
+    Array.isArray(data.links)   ? data.links   :
+    Array.isArray(data.sources) ? data.sources : [];
+
+  for (const s of arr) {
+    if (s && (s.type === "hls" || (s.url && s.url.includes(".m3u8"))) && s.url) {
+      return { url: s.url, referer: s.referer ?? null, type: "hls" };
+    }
+  }
+  for (const s of arr) {
+    if (s && typeof s.url === "string" && s.url.startsWith("http")) {
+      return { url: s.url, referer: s.referer ?? null, type: s.type === "embed" ? "embed" : "hls" };
+    }
+  }
+  return null;
+}
+
+function extractSubtitles(data) {
+  if (Array.isArray(data.subtitles)) return data.subtitles;
+  if (Array.isArray(data.tracks))    return data.tracks;
+  return [];
+}
+
+const PROVIDER_TIMEOUT_MS = 18_000; // 18 s per provider
+
+/**
+ * Fetch a stream from exactly ONE named provider — no racing. The caller
+ * (the UI's provider tabs) decides which provider to ask.
+ *
+ * @param {string} anilistId
+ * @param {string} providerName  "anidbapp" | "anineko" | "anizone"
+ * @param {"sub"|"dub"} lang
+ * @param {number} epNum
+ * @returns {Promise<object|null>}
+ */
+async function fetchFromProvider(p, anilistId, lang, epNum) {
+  const url = `http://localhost/watch/${p.name}/${anilistId}/${lang}/${p.name}-${epNum}`;
+  try {
+    const ac    = new AbortController();
+    const timer = setTimeout(() => ac.abort(), PROVIDER_TIMEOUT_MS);
+    const req   = new Request(url, { signal: ac.signal });
+    let resp;
+    try {
+      resp = await p.handler.fetch(req, {});
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const extracted = extractStreamUrl(data);
+    if (!extracted) return null;
+    const isEmbed = extracted.type === "embed";
+    // Actual media URLs (HLS/mp4) always route through our own proxy — not
+    // just when a referer is required. Some CDNs (AniZone's vid-cdn.xyz)
+    // lock their Access-Control-Allow-Origin down to their own site, which
+    // silently blocks the browser's fetch/hls.js requests with no
+    // network-tab error obvious to the end user — routing everything
+    // through our own same-origin proxy (which always sends
+    // `Access-Control-Allow-Origin: *`) sidesteps that regardless of
+    // whether the provider happens to need a Referer too.
+    // Embed pages (VidWish, and AniDB/AniNeko's embed-only fallback) are
+    // used as-is as an <iframe> src instead — proxying an HTML document
+    // through the media proxy doesn't work and just looked "stuck".
+    // Embed pages go through our own /api/embed-proxy so the upstream domain
+    // (Koyeb, FlixCloud…) is never visible to the browser.
+    const streamUrl = isEmbed
+      ? buildEmbedProxyUrl(extracted.url)
+      : buildProxiedUrl(extracted.url, extracted.referer);
+    return {
+      streamUrl,
+      isEmbed,
+      provider:    p.name,
+      providerLabel: PROVIDER_LABELS[p.name] ?? p.name,
+      artworkUrl:  data.thumbnail ?? data.poster ?? null,
+      subtitles:   extractSubtitles(data),
+      isHardSub:   false,
+      currentLang: lang,
+      languageName: data.languageName ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function streamFromProvider(anilistId, providerName, lang, epNum) {
+  const p = getProvider(providerName);
+  if (!p) return null;
+  return fetchFromProvider(p, anilistId, lang, epNum);
+}
+
+/**
+ * Fetch a stream for the requested provider and audio track.
+ *
+ * Missing-audio-track and provider-is-down are handled very differently on
+ * purpose (this used to conflate the two, which surprised users — picking
+ * "English" on a Japanese-only AniDB episode silently teleported them to a
+ * whole different server):
+ *   1. Requested provider + requested lang — try it as asked.
+ *   2. Requested provider + the OTHER lang — the provider is fine, it just
+ *      doesn't have that track for this episode; stay on the SAME provider
+ *      and serve whatever audio it does have instead of jumping servers.
+ *      Flagged as `audioFallback: true` with `currentLang` set to whatever
+ *      actually played, so the UI can correct its own audio label instead
+ *      of claiming a language that isn't actually playing.
+ *   3. Only if the requested provider can't produce a stream in EITHER
+ *      language (i.e. it's genuinely down/broken for this episode) do we
+ *      fall through to the other active providers — that's the real
+ *      `switchedProvider` case.
+ *
+ * @returns {Promise<(object & { requestedProvider: string, switchedProvider: boolean, audioFallback?: boolean })|null>}
+ */
+export async function streamWithFallback(anilistId, providerName, lang, epNum) {
+  const requested = getProvider(providerName);
+  if (!requested) return null;
+
+  const direct = await fetchFromProvider(requested, anilistId, lang, epNum);
+  if (direct) return { ...direct, requestedProvider: providerName, switchedProvider: false };
+
+  const otherLang = lang === "dub" ? "sub" : "dub";
+  const sameProviderOtherLang = await fetchFromProvider(requested, anilistId, otherLang, epNum);
+  if (sameProviderOtherLang) {
+    return {
+      ...sameProviderOtherLang,
+      requestedProvider: providerName,
+      switchedProvider: false,
+      audioFallback: true,
+    };
+  }
+
+  const rest = FALLBACK_ORDER.map(getProvider).filter((p) => p && p.name !== requested.name);
+  for (const p of rest) {
+    for (const tryLang of [lang, otherLang]) {
+      const result = await fetchFromProvider(p, anilistId, tryLang, epNum);
+      if (result) {
+        return { ...result, requestedProvider: providerName, switchedProvider: true };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Real audio-track list for one provider + episode — used by the UI's
+ * Audio picker so it only ever shows tracks that actually exist instead of
+ * a hardcoded "Japanese / English" pair.
+ */
+export async function getAudioOptions(providerName, anilistId, epNum) {
+  const p = getProvider(providerName);
+  if (!p?.getAudioOptions) return [];
+  try {
+    return (await p.getAudioOptions(anilistId, Number(epNum))) ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Find the first provider (in fallback order, current provider preferred)
+ * whose real audio-option list contains `code` — used when the user picks
+ * a language the current server doesn't have, so the UI can jump straight
+ * to a server that does instead of guessing and failing.
+ */
+export async function findProviderForAudio(anilistId, epNum, code, preferredProvider) {
+  const order = [preferredProvider, ...FALLBACK_ORDER.filter((n) => n !== preferredProvider)].filter(Boolean);
+  for (const name of order) {
+    const options = await getAudioOptions(name, anilistId, epNum);
+    if (options.some((o) => o.code === code)) return name;
+  }
+  return null;
+}

@@ -1,0 +1,1504 @@
+import { Router }      from "express";
+import type { Request, Response } from "express";
+
+const router = Router();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HTTP helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ANILIST = "https://graphql.anilist.co";
+const KITSU   = "https://kitsu.app/api/edge";
+const ARM_URL = "https://relations.yuna.moe/api/ids";
+const ANISKIP = "https://api.aniskip.com/v2";
+const UA      = "Mozilla/5.0 (compatible; AniStream/1.0)";
+
+async function alQuery<T = unknown>(
+  query: string,
+  variables?: Record<string, unknown>,
+): Promise<T> {
+  const res = await fetch(ANILIST, {
+    method:  "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body:    JSON.stringify({ query, variables }),
+  });
+  if (!res.ok) throw new Error(`AniList HTTP ${res.status}`);
+  const json = (await res.json()) as { data: T; errors?: { message: string }[] };
+  if (json.errors?.length) throw new Error(`AniList: ${json.errors[0]!.message}`);
+  return json.data;
+}
+
+// ── ARM → Kitsu ID lookup (MAL ID as source — more reliable than AniList ID) ─
+
+interface KitsuEp {
+  number:    number;
+  title:     string | null;
+  thumbnail: string | null;
+  airdate:   string | null; // "YYYY-MM-DD"
+}
+
+async function armKitsuId(malId: number): Promise<number | null> {
+  try {
+    const r = await fetch(`${ARM_URL}?source=myanimelist&id=${malId}`, {
+      headers: { "User-Agent": UA },
+    });
+    if (!r.ok) return null;
+    const d = await r.json() as { kitsu?: number } | null;
+    return d?.kitsu ?? null;
+  } catch { return null; }
+}
+
+// Fetches ALL Kitsu episodes for a given kitsu anime ID in parallel.
+// Kitsu max page size = 20; no rate limits on the public API.
+async function fetchKitsuEps(kitsuId: number): Promise<Map<number, KitsuEp>> {
+  const PAGE = 20;
+  const map  = new Map<number, KitsuEp>();
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const parse = (raw: any): KitsuEp => ({
+    number:    raw?.attributes?.number ?? 0,
+    title:     raw?.attributes?.canonicalTitle ?? null,
+    thumbnail: raw?.attributes?.thumbnail?.original ?? null,
+    airdate:   raw?.attributes?.airdate ?? null,
+  });
+
+  const first = await fetch(
+    `${KITSU}/anime/${kitsuId}/episodes?page[limit]=${PAGE}&page[offset]=0`,
+    { headers: { "User-Agent": UA, Accept: "application/vnd.api+json" } },
+  ).then((r) => (r.ok ? r.json() : null)).catch(() => null) as {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    meta: { count: number }; data: any[];
+  } | null;
+
+  if (!first) return map;
+  for (const e of first.data ?? []) {
+    const ep = parse(e);
+    if (ep.number) map.set(ep.number, ep);
+  }
+
+  const total = first.meta?.count ?? 0;
+  if (total <= PAGE) return map;
+
+  const pages = Math.ceil(total / PAGE) - 1;
+  const rest  = await Promise.all(
+    Array.from({ length: pages }, (_, i) =>
+      fetch(
+        `${KITSU}/anime/${kitsuId}/episodes?page[limit]=${PAGE}&page[offset]=${(i + 1) * PAGE}`,
+        { headers: { "User-Agent": UA, Accept: "application/vnd.api+json" } },
+      ).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    ),
+  );
+  for (const p of rest) {
+    for (const e of p?.data ?? []) {
+      const ep = parse(e);
+      if (ep.number) map.set(ep.number, ep);
+    }
+  }
+
+  return map;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// In-memory stale-while-revalidate cache
+// ─────────────────────────────────────────────────────────────────────────────
+
+function mkSwr<T>(
+  ttlMs:   number,
+  swrMs:   number,
+  fetcher: (key: string) => Promise<T>,
+) {
+  const store    = new Map<string, { data: T; at: number }>();
+  const inflight = new Map<string, Promise<T>>();
+
+  function schedule(key: string): Promise<T> {
+    if (inflight.has(key)) return inflight.get(key)!;
+    const p = fetcher(key)
+      .then((d) => { store.set(key, { data: d, at: Date.now() }); return d; })
+      .catch((e) => {
+        const c = store.get(key);
+        if (c) return c.data; // serve stale on error
+        throw e;
+      })
+      .finally(() => inflight.delete(key));
+    inflight.set(key, p);
+    return p;
+  }
+
+  return async (key: string): Promise<T> => {
+    const now = Date.now();
+    const c   = store.get(key);
+    if (c && now - c.at < ttlMs) {
+      if (now - c.at > swrMs) schedule(key); // background revalidate
+      return c.data;
+    }
+    return schedule(key);
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AniList shape helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface AlMedia {
+  id:           number;
+  idMal?:       number | null;
+  title?:       { english?: string | null; romaji?: string | null; native?: string | null } | null;
+  coverImage?:  { extraLarge?: string | null; large?: string | null } | null;
+  bannerImage?: string | null;
+  description?: string | null;
+  genres?:      string[] | null;
+  format?:      string | null;
+  status?:      string | null;
+  averageScore?: number | null;
+  seasonYear?:  number | null;
+  episodes?:    number | null;
+  startDate?:   { year?: number | null } | null;
+  studios?:     { nodes: { name: string }[] } | null;
+  type?:        string | null;
+  relations?:   {
+    edges: {
+      relationType: string;
+      node: AlMedia;
+    }[];
+  } | null;
+}
+
+function cover(m: AlMedia): string {
+  return m.coverImage?.extraLarge ?? m.coverImage?.large ?? "";
+}
+
+function title(m: AlMedia): string {
+  return m.title?.english ?? m.title?.romaji ?? "";
+}
+
+function stripHtml(s: string | null | undefined): string {
+  return (s ?? "").replace(/<[^>]*>/g, "").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function currentSeason(): { season: string; year: number } {
+  const mo = new Date().getMonth() + 1;
+  const yr = new Date().getFullYear();
+  const s  = mo <= 3 ? "WINTER" : mo <= 6 ? "SPRING" : mo <= 9 ? "SUMMER" : "FALL";
+  return { season: s, year: yr };
+}
+
+const toCard = (m: AlMedia) => ({
+  id:       m.id,
+  title:    title(m),
+  posterUrl: cover(m),
+  type:     m.format ?? null,
+  year:     m.seasonYear ?? null,
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /home
+// ─────────────────────────────────────────────────────────────────────────────
+
+const HOME_Q = `
+query($season: MediaSeason, $year: Int) {
+  hero: Page(page: 1, perPage: 8) {
+    media(type: ANIME, sort: TRENDING_DESC, isAdult: false) {
+      id title { english romaji } coverImage { extraLarge large } bannerImage
+      description(asHtml: false) genres format status averageScore seasonYear
+    }
+  }
+  popular: Page(page: 1, perPage: 20) {
+    media(type: ANIME, sort: POPULARITY_DESC, isAdult: false, format: TV) {
+      id title { english romaji } coverImage { extraLarge } format status seasonYear
+    }
+  }
+  topRated: Page(page: 1, perPage: 20) {
+    media(type: ANIME, sort: SCORE_DESC, isAdult: false, format: TV, status: FINISHED) {
+      id title { english romaji } coverImage { extraLarge } format status seasonYear
+    }
+  }
+  airing: Page(page: 1, perPage: 20) {
+    media(type: ANIME, season: $season, seasonYear: $year, sort: POPULARITY_DESC, isAdult: false) {
+      id title { english romaji } coverImage { extraLarge } format status seasonYear
+    }
+  }
+  movies: Page(page: 1, perPage: 20) {
+    media(type: ANIME, format: MOVIE, sort: POPULARITY_DESC, isAdult: false) {
+      id title { english romaji } coverImage { extraLarge } format status seasonYear
+    }
+  }
+  upcoming: Page(page: 1, perPage: 20) {
+    media(type: ANIME, status: NOT_YET_RELEASED, sort: POPULARITY_DESC, isAdult: false) {
+      id title { english romaji } coverImage { extraLarge } format status seasonYear
+    }
+  }
+  action: Page(page: 1, perPage: 20) {
+    media(type: ANIME, genre_in: ["Action"], sort: TRENDING_DESC, isAdult: false, format: TV) {
+      id title { english romaji } coverImage { extraLarge } format status seasonYear
+    }
+  }
+  romance: Page(page: 1, perPage: 20) {
+    media(type: ANIME, genre_in: ["Romance"], sort: SCORE_DESC, isAdult: false, format: TV) {
+      id title { english romaji } coverImage { extraLarge } format status seasonYear
+    }
+  }
+  fantasy: Page(page: 1, perPage: 20) {
+    media(type: ANIME, genre_in: ["Fantasy"], sort: TRENDING_DESC, isAdult: false, format: TV) {
+      id title { english romaji } coverImage { extraLarge } format status seasonYear
+    }
+  }
+}`;
+
+interface HomeData {
+  hero:     { media: AlMedia[] };
+  popular:  { media: AlMedia[] };
+  topRated: { media: AlMedia[] };
+  airing:   { media: AlMedia[] };
+  movies:   { media: AlMedia[] };
+  upcoming: { media: AlMedia[] };
+  action:   { media: AlMedia[] };
+  romance:  { media: AlMedia[] };
+  fantasy:  { media: AlMedia[] };
+}
+
+const getHome = mkSwr<unknown>(10 * 60_000, 5 * 60_000, async () => {
+  const { season, year } = currentSeason();
+  const d = await alQuery<HomeData>(HOME_Q, { season, year });
+  return {
+    hero: d.hero.media.map((m) => ({
+      id:          m.id,
+      title:       title(m),
+      type:        m.format ?? null,
+      year:        m.seasonYear ?? null,
+      status:      m.status ?? null,
+      rating:      m.averageScore ? +(m.averageScore / 10).toFixed(1) : null,
+      description: stripHtml(m.description),
+      posterUrl:   cover(m),
+      bannerUrl:   m.bannerImage ?? null,
+      genres:      m.genres ?? [],
+    })),
+    sections: [
+      { title: "Trending Now",      items: d.hero.media.map(toCard) },
+      { title: "Most Popular",      items: d.popular.media.map(toCard) },
+      { title: "Currently Airing",  items: d.airing.media.map(toCard) },
+      { title: "Top Rated All Time",items: d.topRated.media.map(toCard) },
+      { title: "Action & Adventure",items: d.action.media.map(toCard) },
+      { title: "Romance",           items: d.romance.media.map(toCard) },
+      { title: "Fantasy & Magic",   items: d.fantasy.media.map(toCard) },
+      { title: "Movies",            items: d.movies.media.map(toCard) },
+      { title: "Coming Soon",       items: d.upcoming.media.map(toCard) },
+    ],
+  };
+});
+
+router.get("/home", async (_req: Request, res: Response) => {
+  try {
+    res.json(await getHome("home"));
+  } catch (e) {
+    console.error("[home]", e);
+    res.status(502).json({ error: "Failed to load home data" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /anime/trending
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TREND_Q = `query {
+  Page(page: 1, perPage: 20) {
+    media(type: ANIME, sort: TRENDING_DESC, isAdult: false) {
+      id title { english romaji } coverImage { extraLarge } format status seasonYear
+    }
+  }
+}`;
+
+const getTrending = mkSwr<unknown>(10 * 60_000, 5 * 60_000, async () => {
+  const d = await alQuery<{ Page: { media: AlMedia[] } }>(TREND_Q);
+  return { items: d.Page.media.map(toCard) };
+});
+
+router.get("/anime/trending", async (_req: Request, res: Response) => {
+  try   { res.json(await getTrending("t")); }
+  catch { res.status(502).json({ error: "Failed to load trending" }); }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /anime/search?q=
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SEARCH_Q = `query($q: String) {
+  Page(page: 1, perPage: 20) {
+    media(type: ANIME, search: $q, isAdult: false) {
+      id title { english romaji } coverImage { extraLarge } format status seasonYear
+    }
+  }
+}`;
+
+router.get("/anime/search", async (req: Request, res: Response) => {
+  const q = ((req.query.q as string) ?? "").trim();
+  if (!q) return void res.json({ results: [] });
+  try {
+    const d = await alQuery<{ Page: { media: AlMedia[] } }>(SEARCH_Q, { q });
+    res.json({ results: d.Page.media.map(toCard) });
+  } catch (e) {
+    console.error("[search]", e);
+    res.status(502).json({ error: "Search failed" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /anime/schedule?date=YYYY-MM-DD&tz=Asia/Kolkata
+//
+// Returns the Mon–Sun week containing `date` (defaults to today), with all
+// airing schedules from AniList grouped by day in the requested timezone.
+// AniList's airingSchedules covers ~3 months back and ~1 month forward, so
+// past and near-future weeks are available. Times are formatted in the
+// requested timezone so the page matches what the user sees in their local
+// clock.
+//
+// Response shape:
+//   {
+//     schedule: [{ day, dayIndex, date, items: [{id, title, posterUrl, episode, time, aired}] }],
+//     weekStart: "YYYY-MM-DD",
+//     weekEnd:   "YYYY-MM-DD",
+//     timezone:  "Asia/Kolkata",
+//   }
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SCHED_Q = `query($s: Int, $e: Int) {
+  Page(page: 1, perPage: 100) {
+    airingSchedules(airingAt_greater: $s, airingAt_lesser: $e, sort: TIME) {
+      episode airingAt
+      media { id title { english romaji } coverImage { extraLarge } format }
+    }
+  }
+}`;
+
+interface AiringEntry {
+  episode:  number;
+  airingAt: number;
+  media:    AlMedia;
+}
+
+// Returns the offset in minutes from UTC for `tz` at the given moment.
+// Used to compute week boundaries that respect the user's local timezone.
+function tzOffsetMinutes(unixMs: number, tz: string): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date(unixMs));
+  const get = (t: string) => parts.find(p => p.type === t)?.value ?? "0";
+  const y = +get("year"), mo = +get("month"), d = +get("day");
+  let h = +get("hour");
+  if (h === 24) h = 0; // some environments return "24" for midnight in hour12:false
+  const mi = +get("minute"), s = +get("second");
+  const asUTC = Date.UTC(y, mo - 1, d, h, mi, s);
+  return Math.round((asUTC - unixMs) / 60000);
+}
+
+// Returns Monday 00:00 (in target TZ) as a unix ms timestamp, given any date
+// string (YYYY-MM-DD) within the target week.
+function getMondayMidnightLocal(dateStr: string, tz: string): number {
+  // Parse input as noon UTC to avoid DST edge cases around midnight.
+  const any = new Date(`${dateStr}T12:00:00Z`);
+
+  // Get weekday of `any` in target TZ (so we know how many days to subtract).
+  const weekdayStr = new Intl.DateTimeFormat("en-US", {
+    weekday: "short", timeZone: tz,
+  }).format(any);
+  const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const dow = weekdays.indexOf(weekdayStr);
+  if (dow < 0) throw new Error(`Could not determine weekday for ${dateStr}`);
+  const daysToSubtract = (dow + 6) % 7; // Mon=0, Tue=1, ..., Sun=6
+
+  // Monday (same moment in UTC, just shifted by whole days).
+  const mondayUtc = new Date(any);
+  mondayUtc.setUTCDate(mondayUtc.getUTCDate() - daysToSubtract);
+
+  // Time-of-day of `mondayUtc` as seen in target TZ, in minutes past midnight.
+  const timeParts = new Intl.DateTimeFormat("en-US", {
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false, timeZone: tz,
+  }).formatToParts(mondayUtc);
+  const get = (t: string) => timeParts.find(p => p.type === t)?.value ?? "0";
+  let h = +get("hour");
+  if (h === 24) h = 0;
+  const m = +get("minute"), s = +get("second");
+  const minutesPastMidnight = h * 60 + m + s / 60;
+
+  // Monday 00:00 in target TZ = mondayUtc - minutesPastMidnight.
+  return mondayUtc.getTime() - minutesPastMidnight * 60 * 1000;
+}
+
+const SCHEDULE_DAY_NAMES = [
+  "Monday", "Tuesday", "Wednesday", "Thursday",
+  "Friday", "Saturday", "Sunday",
+];
+
+// Per-week SWR cache. The cache key embeds the date + tz so different weeks
+// and different timezones are cached independently. Past weeks are stable so
+// the cache is essentially permanent for them; current/future weeks revalidate
+// every 15 min for new episode announcements.
+const getSchedule = mkSwr<unknown>(30 * 60_000, 15 * 60_000, async (key: string) => {
+  // key format: "schedule|YYYY-MM-DD|Asia/Kolkata"
+  const [, dateParam, tz] = key.split("|");
+  if (!dateParam || !tz) throw new Error("Bad schedule cache key");
+
+  // Validate tz (will throw on invalid timezone names).
+  Intl.DateTimeFormat("en-US", { timeZone: tz });
+
+  // Compute Monday 00:00 and Sunday 23:59:59 in target TZ.
+  const mondayMidnightLocal = getMondayMidnightLocal(dateParam, tz);
+  const sundayEndLocal      = mondayMidnightLocal + 7 * 24 * 60 * 60 * 1000 - 1000;
+  const s = Math.floor(mondayMidnightLocal / 1000);
+  const e = Math.floor(sundayEndLocal / 1000);
+
+  // Query AniList for all schedules airing in this range.
+  const d = await alQuery<{ Page: { airingSchedules: AiringEntry[] } }>(SCHED_Q, { s, e });
+
+  // Precompute the 7 days of the week with their dates in target TZ.
+  const dateFmt    = new Intl.DateTimeFormat("en-CA", {
+    year: "numeric", month: "2-digit", day: "2-digit", timeZone: tz,
+  });
+  const weekdayFmt = new Intl.DateTimeFormat("en-US", {
+    weekday: "long", timeZone: tz,
+  });
+  const timeFmt    = new Intl.DateTimeFormat("en-US", {
+    hour: "numeric", minute: "2-digit", hour12: true, timeZone: tz,
+  });
+
+  interface ScheduleItem {
+    id:        number;
+    title:     string;
+    posterUrl: string;
+    episode:   number;
+    time:      string;
+    aired:     boolean;
+  }
+  const weekDays = Array.from({ length: 7 }, (_, i) => {
+    const dayMoment = mondayMidnightLocal + i * 24 * 60 * 60 * 1000;
+    return {
+      day:      weekdayFmt.format(new Date(dayMoment)),
+      dayIndex: i,
+      date:     dateFmt.format(new Date(dayMoment)),
+      items:    [] as ScheduleItem[],
+    };
+  });
+
+  // Group airing items by their local date in target TZ.
+  const itemsByDate = new Map<string, ScheduleItem[]>();
+  const now = Date.now();
+
+  for (const a of d.Page.airingSchedules) {
+    const dt      = new Date(a.airingAt * 1000);
+    const dateStr = dateFmt.format(dt);
+    if (!itemsByDate.has(dateStr)) itemsByDate.set(dateStr, []);
+    itemsByDate.get(dateStr)!.push({
+      id:        a.media.id,
+      title:     title(a.media),
+      posterUrl: cover(a.media),
+      episode:   a.episode,
+      time:      timeFmt.format(dt),
+      aired:     a.airingAt * 1000 < now,
+    });
+  }
+
+  // Attach each day's items.
+  for (const day of weekDays) {
+    const items = itemsByDate.get(day.date);
+    if (items) day.items = items;
+  }
+
+  // For the frontend's "Week of <start> – <end>" header.
+  const weekStart = dateFmt.format(new Date(mondayMidnightLocal));
+  const weekEnd   = dateFmt.format(new Date(sundayEndLocal));
+
+  return {
+    schedule: weekDays,
+    weekStart,
+    weekEnd,
+    timezone: tz,
+  };
+});
+
+router.get("/anime/schedule", async (req: Request, res: Response) => {
+  try {
+    const tz      = (req.query.tz as string)   || "Asia/Kolkata";
+    const rawDate = (req.query.date as string) || "";
+
+    // Validate timezone FIRST — before we use it to compute the default date.
+    // Intl.DateTimeFormat throws RangeError on unknown tz names.
+    try {
+      Intl.DateTimeFormat("en-US", { timeZone: tz });
+    } catch {
+      return res.status(400).json({ error: `Invalid timezone: ${tz}` });
+    }
+
+    // Default to today (in target TZ) if no date supplied.
+    const dateParam = rawDate ||
+      new Intl.DateTimeFormat("en-CA", {
+        year: "numeric", month: "2-digit", day: "2-digit", timeZone: tz,
+      }).format(new Date());
+
+    // Validate date format.
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
+      return res.status(400).json({ error: `Invalid date format: ${dateParam}. Use YYYY-MM-DD.` });
+    }
+
+    res.json(await getSchedule(`schedule|${dateParam}|${tz}`));
+  } catch (e) {
+    console.error("[schedule]", e);
+    res.status(502).json({ error: "Failed to load schedule" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /anime/:id/logo
+//
+// Returns the anime's stylized text logo as a transparent PNG URL — sourced
+// from TheTVDB's clearlogo collection. Used by the watch page as a branded
+// loading overlay while the stream URL resolves.
+//
+// Mapping strategy (3-tier fallback):
+//
+//   1. PRIMARY — just4anime.online API
+//      `https://just4anime.online/api/episodes/<id>?full=true`
+//      Returns JSON with `data.images[]` containing a Clearlogo entry.
+//      They've already done the AniList→TVDB mapping server-side, so this
+//      has near-100% hit rate for any anime TVDB has a logo for.
+//
+//   2. FALLBACK — direct TVDB scrape via slug guessing
+//      Query AniList for titles, slugify, fetch https://thetvdb.com/series/<slug>
+//      and regex-scan the HTML for clearlogo URLs.
+//      Used when just4anime.online is down or returns success=false.
+//
+//   3. LAST RESORT — return null
+//      Caller (frontend) falls back to a spinner-only loading state.
+//
+// Permanent in-memory cache keyed by AniList ID — once resolved, future
+// calls are instant (TVDB slugs/just4anime responses don't change).
+//
+// Returns:
+//   { logoUrl: string | null, source: "just4anime" | "tvdb" | null }
+// ─────────────────────────────────────────────────────────────────────────────
+
+const J4A_API = "https://just4anime.online/api/episodes";
+const TVDB_BASE = "https://thetvdb.com/series/";
+const TVDB_LOGO_RE =
+  /https:\/\/artworks\.thetvdb\.com\/banners\/v4\/series\/\d+\/clearlogo\/[a-f0-9]+\.png/g;
+
+// Slugify an anime title the way TVDB does:
+//   "ONE PIECE" -> "one-piece"
+//   "Bleach: Thousand-Year Blood War" -> "bleach-thousand-year-blood-war"
+//   "Demon Slayer: Kimetsu no Yaiba" -> "demon-slayer-kimetsu-no-yaiba"
+function tvdbSlug(t: string): string {
+  return t
+    .toLowerCase()
+    .replace(/[''`]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+// Permanent cache: AniList ID -> { logoUrl, source } | null
+const logoCache = new Map<number, { logoUrl: string; source: string } | null>();
+
+// PRIMARY: scrape from just4anime.online API
+async function fetchLogoFromJust4Anime(anilistId: number): Promise<string | null> {
+  try {
+    const res = await fetch(`${J4A_API}/${anilistId}?full=true`, {
+      headers: {
+        "User-Agent": UA,
+        "Accept": "application/json",
+        "Referer": "https://just4anime.online/",
+      },
+    });
+    if (!res.ok) return null;
+    const json = await res.json() as {
+      success?: boolean;
+      data?: { images?: Array<{ coverType?: string; url?: string }> };
+    };
+    if (!json.success || !json.data?.images) return null;
+    // Find the Clearlogo entry — there may be multiple images (poster, banner,
+    // clearlogo, etc.). We only want the stylized text logo.
+    const clearlogo = json.data.images.find(
+      (img) => img.coverType === "Clearlogo" && img.url,
+    );
+    return clearlogo?.url ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// FALLBACK: direct TVDB scrape via slug guessing
+async function fetchTvdbLogo(slug: string): Promise<string | null> {
+  try {
+    const res = await fetch(`${TVDB_BASE}${encodeURIComponent(slug)}`, {
+      headers: { "User-Agent": UA },
+      redirect: "follow",
+    });
+    if (!res.ok) return null;
+    const html = await res.text();
+    const match = TVDB_LOGO_RE.exec(html);
+    return match ? match[0] : null;
+  } catch {
+    return null;
+  }
+}
+
+const LOGO_TITLES_Q = `query($id: Int) {
+  Media(id: $id, type: ANIME) {
+    id
+    title { english romaji native }
+  }
+}`;
+
+async function resolveLogo(anilistId: number): Promise<{ logoUrl: string; source: string } | null> {
+  const cached = logoCache.get(anilistId);
+  if (cached !== undefined) return cached;
+
+  let result: { logoUrl: string; source: string } | null = null;
+
+  // ── TIER 1: just4anime.online ────────────────────────────────────────────
+  const j4aLogo = await fetchLogoFromJust4Anime(anilistId);
+  if (j4aLogo) {
+    result = { logoUrl: j4aLogo, source: "just4anime" };
+    logoCache.set(anilistId, result);
+    return result;
+  }
+
+  // ── TIER 2: TVDB direct scrape via slug guessing ──────────────────────────
+  try {
+    const d = await alQuery<{ Media: { title: { english?: string | null; romaji?: string | null; native?: string | null } | null } | null }>(
+      LOGO_TITLES_Q,
+      { id: anilistId },
+    );
+    const titles = d.Media?.title;
+    if (titles) {
+      const candidates = Array.from(new Set(
+        [titles.english, titles.romaji, titles.native]
+          .filter((t): t is string => !!t && t.trim().length > 0)
+          .map(tvdbSlug),
+      ));
+      for (const slug of candidates) {
+        if (!slug) continue;
+        const logo = await fetchTvdbLogo(slug);
+        if (logo) {
+          result = { logoUrl: logo, source: "tvdb" };
+          break;
+        }
+      }
+    }
+  } catch {
+    result = null;
+  }
+
+  // ── TIER 3: null (frontend shows spinner) ─────────────────────────────────
+  logoCache.set(anilistId, result);
+  return result;
+}
+
+router.get("/anime/:id/logo", async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ error: "Invalid anime ID" });
+    }
+    const result = await resolveLogo(id);
+    res.json({
+      logoUrl: result?.logoUrl ?? null,
+      source: result?.source ?? null,
+    });
+  } catch (e) {
+    console.error("[logo]", e);
+    res.status(502).json({ error: "Failed to resolve logo" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /anime/:id/details
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DETAILS_Q = `query($id: Int) {
+  Media(id: $id, type: ANIME) {
+    id idMal
+    title { english romaji native }
+    coverImage { extraLarge large }
+    bannerImage
+    description(asHtml: false)
+    genres format status episodes averageScore seasonYear
+    startDate { year month day }
+    studios(isMain: true) { nodes { name } }
+    relations {
+      edges {
+        relationType(version: 2)
+        node {
+          id type title { english romaji } coverImage { extraLarge }
+          format status seasonYear episodes
+        }
+      }
+    }
+  }
+}`;
+
+const getDetails = mkSwr<unknown>(15 * 60_000, 5 * 60_000, async (id: string) => {
+  const d = await alQuery<{ Media: AlMedia }>(DETAILS_Q, { id: Number(id) });
+  const m = d.Media;
+  return {
+    id:           m.id,
+    malId:        m.idMal ?? null,
+    title:        title(m),
+    romaji:       m.title?.romaji ?? null,
+    titleNative:  m.title?.native ?? null,
+    description:  stripHtml(m.description),
+    posterUrl:    cover(m),
+    bannerUrl:    m.bannerImage ?? null,
+    genres:       m.genres ?? [],
+    type:         m.format ?? null,
+    year:         m.seasonYear ?? m.startDate?.year ?? null,
+    status:       m.status ?? null,
+    episodeCount: m.episodes ?? null,
+    rating:       m.averageScore ? +(m.averageScore / 10).toFixed(1) : null,
+    studio:       m.studios?.nodes?.[0]?.name ?? null,
+  };
+});
+
+router.get("/anime/:id/details", async (req: Request, res: Response) => {
+  try {
+    res.json(await getDetails(req.params.id!));
+  } catch (e) {
+    console.error("[details]", e);
+    res.status(502).json({ error: "Not found" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /anime/:id/seasons  (related series from AniList relations)
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.get("/anime/:id/seasons", async (req: Request, res: Response) => {
+  try {
+    const d      = await alQuery<{ Media: AlMedia }>(DETAILS_Q, { id: Number(req.params.id) });
+    const edges  = d.Media.relations?.edges ?? [];
+    const seasons = edges
+      .filter(
+        (e) =>
+          ["SEQUEL", "PREQUEL", "SIDE_STORY"].includes(e.relationType) &&
+          e.node.type === "ANIME",
+      )
+      .map((e) => ({
+        id:        e.node.id,
+        title:     title(e.node),
+        isCurrent: e.node.id === Number(req.params.id),
+        posterUrl: cover(e.node),
+        type:      e.node.format ?? null,
+        episodes:  e.node.episodes ?? null,
+        status:    e.node.status ?? null,
+        year:      e.node.seasonYear ?? null,
+      }));
+    res.json({ seasons });
+  } catch (e) {
+    res.status(502).json({ error: "Failed to load seasons" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /anime/:id/episodes  (just4anime primary, AniList+Kitsu fallback)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// EPISODE DATA SOURCE — 2-tier fallback:
+//
+//   TIER 1 (PRIMARY): just4anime.online API
+//     GET https://just4anime.online/api/episodes/<id>?full=true
+//     Returns data.episodes[] with rich metadata:
+//       { id, number, title, titleJa, image, airDate, duration, isFiller, hasAired }
+//     The `image` field is a TVDB episode screencap thumbnail — much higher
+//     quality than Kitsu's thumbnails.
+//     Also returns data.nextAiringEpisode + data.nextAiringDate for countdown.
+//     Hit rate: ~95%+ for any anime TVDB has indexed.
+//
+//   TIER 2 (FALLBACK): AniList + Kitsu (original implementation below)
+//     AniList for authoritative aired count + nextAiringEpisode.
+//     Kitsu via ARM for episode titles + thumbnails.
+//     Used when just4anime is down, returns success=false, or has no episodes.
+//     DO NOT MODIFY — keep the original logic intact as a safety net.
+//
+// Both paths return the SAME response shape so the frontend doesn't care
+// which source produced the data.
+
+interface J4AEpisode {
+  id:        string;
+  number:    number;
+  title:     string;
+  titleJa?:  string;
+  image:     string;
+  airDate:   string;
+  duration?: number;
+  isFiller:  boolean;
+  hasAired:  boolean;
+  rating?:   string;
+}
+interface J4AEpisodesResponse {
+  success?: boolean;
+  data?: {
+    id:                   string | number;
+    malId?:               number;
+    title?:               string;
+    titleJa?:             string;
+    totalEpisodes?:       number;
+    currentEpisode?:      number;
+    nextAiringEpisode?:   number | null;
+    nextAiringDate?:      string | null;
+    episodes?:            J4AEpisode[];
+  };
+}
+
+// Fetch episodes from just4anime — returns null on any failure
+// (caller falls back to AniList+Kitsu). Cached via the same SWR wrapper as
+// the existing implementation, so repeated calls are instant.
+async function fetchEpisodesFromJust4Anime(anilistId: number): Promise<{
+  episodes:  unknown[];
+  nextAiring: { episode: number; airsAt: number } | null;
+} | null> {
+  try {
+    const res = await fetch(`${J4A_API}/${anilistId}?full=true`, {
+      headers: {
+        "User-Agent": UA,
+        "Accept": "application/json",
+        "Referer": "https://just4anime.online/",
+      },
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as J4AEpisodesResponse;
+    if (!json.success || !json.data?.episodes?.length) return null;
+
+    const data = json.data;
+    const eps = data.episodes!;
+
+    // Convert just4anime's nextAiringDate (ISO string) to ms timestamp.
+    // If nextAiringEpisode is null/undefined, there's no upcoming episode.
+    let nextAiring: { episode: number; airsAt: number } | null = null;
+    if (data.nextAiringEpisode && data.nextAiringDate) {
+      const airsAt = new Date(data.nextAiringDate).getTime();
+      if (Number.isFinite(airsAt)) {
+        nextAiring = { episode: data.nextAiringEpisode, airsAt };
+      }
+    }
+
+    // Map to our existing episode shape so the frontend stays unchanged.
+    // Key transformation notes:
+    //   - `id` becomes the episode NUMBER (we use numeric IDs for routing).
+    //     The original `id` (e.g. "21-1") is just4anime's internal format
+    //     and not what our frontend expects.
+    //   - `image` → `thumbnail` (better quality TVDB screencap)
+    //   - `isFiller` → `filler`
+    //   - `hasAired` → `aired`
+    //   - `airsAt` only attached to the single next-airing episode
+    //   - hasSub/hasDub default to true (we don't get this from just4anime)
+    const episodes = eps.map((ep) => {
+      const isNextAiring = nextAiring?.episode === ep.number && !ep.hasAired;
+      return {
+        id:        ep.number,
+        number:    ep.number,
+        title:     ep.title || null,
+        thumbnail: ep.image || null,
+        filler:    !!ep.isFiller,
+        airDate:   ep.airDate || null,
+        aired:     !!ep.hasAired,
+        airsAt:    isNextAiring ? nextAiring!.airsAt : null,
+        hasSub:    true,
+        hasDub:    true,
+      };
+    });
+
+    return { episodes, nextAiring };
+  } catch {
+    return null;
+  }
+}
+
+const getEpisodes = mkSwr<unknown>(30 * 60_000, 10 * 60_000, async (id: string) => {
+  const anilistId = Number(id);
+
+  // ── TIER 1: just4anime.online (primary) ────────────────────────────────
+  const j4aResult = await fetchEpisodesFromJust4Anime(anilistId);
+  if (j4aResult) {
+    return j4aResult;
+  }
+
+  // ── TIER 2: AniList + Kitsu (fallback — original implementation) ────────
+  // 1. AniList — authoritative source for aired/upcoming status
+  const md = await alQuery<{
+    Media: {
+      idMal:             number | null;
+      episodes:          number | null;
+      status:            string | null;
+      nextAiringEpisode: { episode: number; timeUntilAiring: number } | null;
+    }
+  }>(
+    `query($id: Int) {
+      Media(id: $id, type: ANIME) {
+        idMal episodes status
+        nextAiringEpisode { episode timeUntilAiring }
+      }
+    }`,
+    { id: anilistId },
+  );
+
+  const { idMal: malId, episodes: totalEpsField, status, nextAiringEpisode } = md.Media;
+
+  // 2. Determine aired count — primary logic, 100% from AniList
+  // FINISHED/CANCELLED → all planned eps are aired
+  // RELEASING with nextAiringEpisode → episode N is next, so N-1 have aired
+  // RELEASING without nextAiringEpisode → treat all known eps as aired
+  // NOT_YET_RELEASED → 0
+  let airedCount: number;
+  if (status === "FINISHED" || status === "CANCELLED") {
+    airedCount = totalEpsField ?? 0;
+  } else if (nextAiringEpisode) {
+    airedCount = nextAiringEpisode.episode - 1;
+  } else {
+    airedCount = totalEpsField ?? 0;
+  }
+
+  // Absolute timestamp — computed at fetch time so cached responses
+  // still have a correct countdown when served later
+  const nextAiring = nextAiringEpisode
+    ? {
+        episode: nextAiringEpisode.episode,
+        airsAt:  Date.now() + nextAiringEpisode.timeUntilAiring * 1000,
+      }
+    : null;
+
+  // 3. Kitsu via ARM — best-effort titles + thumbnails
+  //    Pipeline: AniList idMal → ARM (MAL source) → Kitsu ID → Kitsu episodes
+  //    Falls back silently to numbered stubs when mapping is missing.
+  let kitsuMap = new Map<number, KitsuEp>();
+  if (malId) {
+    const kitsuId = await armKitsuId(malId);
+    if (kitsuId != null) {
+      kitsuMap = await fetchKitsuEps(kitsuId).catch(() => new Map());
+    }
+  }
+
+  // 4. Build episode list
+  //    Show: aired episodes + the ONE immediate upcoming episode (with countdown)
+  //    Future episodes beyond that are intentionally hidden.
+  const totalToShow = airedCount + (nextAiring ? 1 : 0);
+  const count       = Math.max(totalToShow, 1); // always show at least 1
+
+  const episodes = Array.from({ length: count }, (_, i) => {
+    const num    = i + 1;
+    const kitsu  = kitsuMap.get(num);
+    const isAired = num <= airedCount;
+    return {
+      id:        num,
+      number:    num,
+      title:     kitsu?.title   ?? null,
+      thumbnail: kitsu?.thumbnail ?? null,
+      filler:    false,
+      airDate:   kitsu?.airdate  ?? null,
+      aired:     isAired,
+      // Attach countdown only to the single next-airing episode
+      airsAt:    (!isAired && nextAiring?.episode === num) ? nextAiring.airsAt : null,
+      hasSub:    true,
+      hasDub:    true,
+    };
+  });
+
+  return { episodes, nextAiring };
+});
+
+router.get("/anime/:id/episodes", async (req: Request, res: Response) => {
+  try {
+    res.json(await getEpisodes(req.params.id!));
+  } catch (e) {
+    console.error("[episodes]", e);
+    res.status(502).json({ error: "Failed to load episodes" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /anime/:id/skip-times/:epNum
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.get("/anime/:id/skip-times/:epNum", async (req: Request, res: Response) => {
+  try {
+    const anilistId = Number(req.params.id);
+    const epNum     = Number(req.params.epNum);
+    const dur       = req.query.duration ? Math.round(Number(req.query.duration)) : 0;
+
+    const md = await alQuery<{ Media: { idMal: number | null } }>(
+      `query($id: Int) { Media(id: $id, type: ANIME) { idMal } }`,
+      { id: anilistId },
+    );
+    const malId = md.Media.idMal;
+    if (!malId) return void res.json({ op: null, ed: null });
+
+    const skipUrl  = `${ANISKIP}/skip-times/${malId}/${epNum}?types=op,ed&episodeLength=${dur}`;
+    const skipResp = await fetch(skipUrl);
+    if (!skipResp.ok) return void res.json({ op: null, ed: null });
+
+    const sd = (await skipResp.json()) as {
+      results?: { skipType: string; interval: { startTime: number; endTime: number } }[];
+    };
+    const op = sd.results?.find((x) => x.skipType === "op");
+    const ed = sd.results?.find((x) => x.skipType === "ed");
+
+    res.json({
+      op: op ? { start: op.interval.startTime, end: op.interval.endTime } : null,
+      ed: ed ? { start: ed.interval.startTime, end: ed.interval.endTime } : null,
+    });
+  } catch {
+    res.json({ op: null, ed: null });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /anime/:id/stream/:epNum?lang=sub|dub|hsub&provider=anidbapp|aninico|reanime|vidstream
+// (Anivexa — explicit single provider, no racing). The UI's provider tabs
+// call this with exactly the provider the user picked (or the default,
+// "vidstream", on first load) — a stalled provider only ever affects its own
+// tab, never the whole page.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const VALID_PROVIDERS = ["anidbapp", "aninico", "core", "reanime", "vidstream"] as const;
+type ProviderName = typeof VALID_PROVIDERS[number];
+
+// Lazy-import the JS stream handler once; re-used for every request.
+let _streamWithFallback:
+  | ((anilistId: string, providerName: string, lang: string, epNum: number) => Promise<unknown | null>)
+  | null = null;
+let _getAudioOptions:
+  | ((providerName: string, anilistId: string, epNum: number) => Promise<{ code: string; label: string }[]>)
+  | null = null;
+let _findProviderForAudio:
+  | ((anilistId: string, epNum: number, code: string, preferredProvider: string) => Promise<string | null>)
+  | null = null;
+
+async function getStreamHandlerMod() {
+  if (!_streamWithFallback) {
+    // Dynamic import avoids bundling issues with the raw JS provider files.
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-ignore — plain-JS module, no type declarations needed
+    const mod = await import("../anivexa/stream-handler.js");
+    const typed = mod as unknown as {
+      streamWithFallback: typeof _streamWithFallback;
+      getAudioOptions: typeof _getAudioOptions;
+      findProviderForAudio: typeof _findProviderForAudio;
+    };
+    _streamWithFallback = typed.streamWithFallback;
+    _getAudioOptions = typed.getAudioOptions;
+    _findProviderForAudio = typed.findProviderForAudio;
+  }
+  return { streamWithFallback: _streamWithFallback!, getAudioOptions: _getAudioOptions!, findProviderForAudio: _findProviderForAudio! };
+}
+
+// Cache stream results for 3 h (they're CDN-signed but long-lived)
+const streamSwr = mkSwr<unknown>(3 * 60 * 60_000, 60 * 60_000, async (key: string) => {
+  const [anilistId, provider, lang, epNumStr] = key.split(":");
+  const { streamWithFallback } = await getStreamHandlerMod();
+  const result = await streamWithFallback(anilistId!, provider!, lang!, Number(epNumStr));
+  if (!result) throw new Error(`Provider "${provider}" could not serve this episode`);
+  return result;
+});
+
+router.get("/anime/:id/stream/:epNum", async (req: Request, res: Response) => {
+  const anilistId = req.params.id!;
+  const epNum     = Number(req.params.epNum);
+  // `lang` used to be locked to "sub"|"dub" — now it's whatever real audio
+  // code the picker offered (still "sub"/"dub" for the binary providers,
+  // but can be an exact language code like AniDB's own for a second dub).
+  const lang      = (req.query.lang as string) || "sub";
+  const provider  = (req.query.provider as string) || "vidstream";
+
+  if (isNaN(epNum)) return void res.status(400).json({ error: "Invalid episode number" });
+  if (!VALID_PROVIDERS.includes(provider as ProviderName)) {
+    return void res.status(400).json({ error: `Unknown provider "${provider}"` });
+  }
+
+  try {
+    const result = await streamSwr(`${anilistId}:${provider}:${lang}:${epNum}`);
+    res.json(result);
+  } catch (e) {
+    console.error("[stream]", e);
+    res.status(502).json({ error: `Stream unavailable from ${provider} for this episode` });
+  }
+});
+
+// Real per-episode audio-track list for one provider — backs the Audio
+// picker so it only ever shows tracks that actually exist for this
+// provider+episode instead of a hardcoded Sub/Dub pair.
+const audioOptionsSwr = mkSwr<{ code: string; label: string }[]>(3 * 60 * 60_000, 60 * 60_000, async (key: string) => {
+  const [anilistId, provider, epNumStr] = key.split(":");
+  const { getAudioOptions } = await getStreamHandlerMod();
+  return getAudioOptions(provider!, anilistId!, Number(epNumStr));
+});
+
+router.get("/anime/:id/audio-options/:epNum", async (req: Request, res: Response) => {
+  const anilistId = req.params.id!;
+  const epNum     = Number(req.params.epNum);
+  const provider  = (req.query.provider as string) || "vidstream";
+
+  if (isNaN(epNum)) return void res.status(400).json({ error: "Invalid episode number" });
+  if (!VALID_PROVIDERS.includes(provider as ProviderName)) {
+    return void res.status(400).json({ error: `Unknown provider "${provider}"` });
+  }
+
+  try {
+    const options = await audioOptionsSwr(`${anilistId}:${provider}:${epNum}`);
+    res.json({ provider, options });
+  } catch (e) {
+    console.error("[audio-options]", e);
+    res.json({ provider, options: [] });
+  }
+});
+
+// Given a language the CURRENT provider doesn't have, find the first other
+// provider that genuinely does — backs the "auto-switch server when the
+// picked language isn't available here" behavior.
+router.get("/anime/:id/audio-options/:epNum/find-provider", async (req: Request, res: Response) => {
+  const anilistId = req.params.id!;
+  const epNum     = Number(req.params.epNum);
+  const code      = (req.query.code as string) || "sub";
+  const current   = (req.query.provider as string) || "anidbapp";
+
+  if (isNaN(epNum)) return void res.status(400).json({ error: "Invalid episode number" });
+
+  try {
+    const { findProviderForAudio } = await getStreamHandlerMod();
+    const provider = await findProviderForAudio(anilistId, epNum, code, current);
+    res.json({ provider });
+  } catch (e) {
+    console.error("[find-provider]", e);
+    res.json({ provider: null });
+  }
+});
+
+// ── Embed proxy ─────────────────────────────────────────────────────────────
+// Hides upstream embed URLs (Koyeb, FlixCloud, etc.) from the browser.
+//
+// The stream handler stores each URL server-side under a short-lived opaque
+// token (see anivexa/core/embed-token-store.js).  The browser only ever
+// receives the token — the actual Koyeb/FlixCloud domain is NEVER sent to
+// the client in any form (not even base64-encoded), so it cannot be
+// recovered from the network tab, response bodies, or error pages.
+//
+// Two-step flow:
+//   1. GET /embed-proxy?t=<token>
+//        Server-side preflight: we fetch the upstream URL ourselves with a
+//        3.5 s timeout. If the preflight FAILS (network error, ECONNRESET,
+//        DNS failure, 5xx), we serve a branded "Stream Unavailable" HTML
+//        page with NO iframe, NO upstream URL anywhere in the markup. The
+//        user never sees the Koyeb/FlixCloud domain.
+//        If the preflight PASSES, we serve a tiny HTML shell with an iframe
+//        whose `src` is empty. The actual upstream URL is fetched client-side
+//        via /embed-resolve?t=<token> using fetch() + postMessage, so the URL
+//        is set programmatically (not in the initial HTML — network tab
+//        "Response" tab on the embed-proxy request shows only the shell).
+//
+//   2. GET /embed-resolve?t=<token>  →  { url: string } | 404
+//        Returns the upstream URL as JSON. The embed-proxy HTML uses this to
+//        set iframe.src via JS. We don't expose this endpoint publicly in
+//        the client bundle — it's only called from inside the embed-proxy
+//        shell. Even if a user manually hits it, the URL returned is still
+//        token-gated (4 h TTL) and can't be enumerated.
+
+router.get("/embed-proxy", async (req: Request, res: Response) => {
+  const token = req.query.t as string | undefined;
+  if (!token) return void res.status(400).send("Bad request");
+
+  // @ts-ignore — plain JS module
+  const { lookupToken } = await import("../anivexa/core/embed-token-store.js");
+  const target: string | null = lookupToken(token);
+  if (!target) return void res.status(404).send("Not found or expired");
+
+  // ── Server-side preflight ──────────────────────────────────────────────────
+  // Fetch the upstream URL ourselves with a short timeout. If this fails,
+  // the upstream server is down — we serve the branded error page WITHOUT
+  // ever putting the URL in the response. The user sees "Stream Unavailable"
+  // with a Switch Server button, and no upstream domain is leaked.
+  let preflightOk = false;
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3500);
+    const r = await fetch(target, {
+      signal: controller.signal,
+      headers: { "User-Agent": "AniStream-Preflight/1.0" },
+      redirect: "follow",
+    });
+    clearTimeout(timeout);
+    // 2xx/3xx/4xx all mean the server is alive — only 5xx and network errors
+    // count as "down" for our purposes.
+    preflightOk = r.status < 500;
+  } catch {
+    preflightOk = false;
+  }
+
+  if (!preflightOk) {
+    // Branded error page — no iframe, no URL leak, no upstream domain visible.
+    const errHtml = `<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:#06060a;font-family:'DM Sans',system-ui,sans-serif;color:#fff}
+.wrap{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;text-align:center;padding:32px;background:radial-gradient(circle at 50% 30%,rgba(220,38,38,0.08),transparent 60%)}
+.icon{width:72px;height:72px;border-radius:50%;background:rgba(220,38,38,0.12);border:1px solid rgba(220,38,38,0.28);display:flex;align-items:center;justify-content:center;animation:pulse 2.2s ease-in-out infinite}
+.icon svg{width:36px;height:36px;color:rgba(229,43,80,0.85)}
+.title{font-size:20px;font-weight:800;letter-spacing:-0.01em;color:#fff}
+.sub{font-size:13px;color:rgba(255,255,255,0.4);max-width:340px;line-height:1.6}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,0.25)}50%{box-shadow:0 0 0 14px rgba(220,38,38,0)}}
+</style>
+</head><body>
+<div class="wrap">
+  <div class="icon">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+    </svg>
+  </div>
+  <div>
+    <div class="title">Stream Unavailable</div>
+    <div class="sub" style="margin-top:8px">This server is currently offline or refusing connections.<br>Please switch to a different server using the server selector below the player.</div>
+  </div>
+</div>
+</body></html>`;
+    return res
+      .setHeader("Content-Type", "text/html; charset=utf-8")
+      .setHeader("X-Frame-Options", "SAMEORIGIN")
+      .setHeader("Cache-Control", "no-store")
+      .status(502)
+      .send(errHtml);
+  }
+
+  // ── Happy path: serve the shell with EMBEDDED + OBFUSCATED URL ───────────
+  // The upstream URL is embedded DIRECTLY in the HTML shell but obfuscated
+  // (XOR cipher with the token as key + base64). The client-side JS decodes
+  // it and assigns it to the iframe's src.
+  //
+  // This replaces the previous two-step flow (embed-proxy → embed-resolve JSON)
+  // which exposed the Koyeb URL as plain text in the /embed-resolve response —
+  // visible to anyone with DevTools open in the Network tab.
+  //
+  // Now the URL NEVER appears as plain text in ANY HTTP response body. The
+  // /embed-resolve endpoint has been removed entirely. The only way to
+  // recover the URL is to reverse-engineer the obfuscation JS — which defeats
+  // automated scraping tools but not a determined human (acceptable trade-off).
+  //
+  // Obfuscation: XOR each char of the URL with the corresponding char of the
+  // token (cycling), then base64-encode the result. The token is already
+  // embedded in the HTML (needed for the loader), so no extra data is exposed.
+
+  // XOR + base64 obfuscation
+  function obfuscateUrl(url: string, key: string): string {
+    const urlBytes = Buffer.from(url, "utf-8");
+    const keyBytes = Buffer.from(key, "utf-8");
+    const out = Buffer.alloc(urlBytes.length);
+    for (let i = 0; i < urlBytes.length; i++) {
+      out[i] = urlBytes[i]! ^ keyBytes[i % keyBytes.length]!;
+    }
+    return out.toString("base64");
+  }
+
+  const obfuscatedUrl = obfuscateUrl(target, token);
+
+  // NO SPINNER: The shell shows a pure black background while the iframe
+  // loads. The React watch page renders its OWN logo overlay on top.
+  const shellHtml = `<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:#000;font-family:system-ui,sans-serif;color:#fff}
+#fr{position:absolute;inset:0;width:100%;height:100%;border:none;opacity:0;transition:opacity .25s ease-out}
+#ld{position:absolute;inset:0;background:#000;z-index:2;transition:opacity .3s}
+#ld.hide{opacity:0;pointer-events:none}
+</style>
+</head><body>
+<div id="ld"></div>
+<iframe id="fr" allowfullscreen allow="autoplay;fullscreen;encrypted-media;picture-in-picture"></iframe>
+<script>
+(function(){
+  var fr=document.getElementById('fr');
+  var ld=document.getElementById('ld');
+  var key="${token}";
+  var enc="${obfuscatedUrl}";
+
+  // Decode: base64 → XOR with key → UTF-8 string
+  try {
+    var raw=atob(enc);
+    var urlBytes=new Uint8Array(raw.length);
+    for(var i=0;i<raw.length;i++) urlBytes[i]=raw.charCodeAt(i);
+    var keyBytes=new TextEncoder().encode(key);
+    var out=new Uint8Array(urlBytes.length);
+    for(var j=0;j<urlBytes.length;j++){
+      out[j]=urlBytes[j]^keyBytes[j%keyBytes.length];
+    }
+    var decodedUrl=new TextDecoder().decode(out);
+
+    fr.src=decodedUrl;
+    fr.onload=function(){
+      fr.style.opacity='1';
+      ld.classList.add('hide');
+      setTimeout(function(){ ld.style.display='none'; }, 320);
+    };
+  } catch(e){
+    // Decode failed — leave black screen, React watchdog handles errors
+  }
+})();
+</script>
+</body></html>`;
+
+  res
+    .setHeader("Content-Type", "text/html; charset=utf-8")
+    .setHeader("X-Frame-Options", "SAMEORIGIN")
+    .setHeader("Cache-Control", "no-store")
+    .send(shellHtml);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// /embed-resolve — REMOVED for security
+// ─────────────────────────────────────────────────────────────────────────────
+// This endpoint used to return the upstream Koyeb/FlixCloud URL as plain JSON
+// (`{ url: "https://...koyeb.app/..." }`). Anyone with DevTools open could see
+// the full upstream domain in the Network tab response — defeating the entire
+// purpose of the embed-proxy's URL-hiding design.
+//
+// The embed-proxy now embeds the URL DIRECTLY in its HTML shell, obfuscated
+// via XOR cipher (token as key) + base64. The client-side JS decodes it.
+// The URL never appears as plain text in ANY HTTP response body.
+//
+// This endpoint has been removed. If anyone queries it, they get a 404.
+// (Keeping the route definition as a 404 stub so old embed-proxy HTML shells
+// cached in browsers don't get a confusing Express default error page.)
+router.get("/embed-resolve", (_req: Request, res: Response) => {
+  res.status(404).json({ error: "Not found" });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /upcoming — NOT_YET_RELEASED anime sorted by popularity
+// ─────────────────────────────────────────────────────────────────────────────
+
+const UPCOMING_Q = `query {
+  Page(page: 1, perPage: 12) {
+    media(type: ANIME, status: NOT_YET_RELEASED, sort: POPULARITY_DESC, isAdult: false) {
+      id title { english romaji } coverImage { extraLarge large }
+      format seasonYear episodes
+    }
+  }
+}`;
+
+const getUpcoming = mkSwr<unknown>(20 * 60_000, 10 * 60_000, async () => {
+  const d = await alQuery<{ Page: { media: AlMedia[] } }>(UPCOMING_Q);
+  return {
+    items: d.Page.media.map((m) => ({
+      id:           m.id,
+      title:        title(m),
+      posterUrl:    cover(m),
+      type:         m.format ?? null,
+      year:         m.seasonYear ?? null,
+      episodeCount: m.episodes ?? null,
+    })),
+  };
+});
+
+router.get("/upcoming", async (_req: Request, res: Response) => {
+  try {
+    res.json(await getUpcoming("__upcoming__"));
+  } catch (e) {
+    console.error("[upcoming]", e);
+    res.status(502).json({ error: "Failed to load upcoming" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /browse — filterable anime catalog backed by AniList
+// Query params: search, genre, year, season, format, status, sort, page
+// ─────────────────────────────────────────────────────────────────────────────
+
+const BROWSE_Q = `
+query Browse(
+  $page: Int, $perPage: Int,
+  $search: String,
+  $genre: String,
+  $year: Int,
+  $season: MediaSeason,
+  $format: MediaFormat,
+  $status: MediaStatus,
+  $sort: [MediaSort]
+) {
+  Page(page: $page, perPage: $perPage) {
+    pageInfo { hasNextPage total }
+    media(
+      type: ANIME, isAdult: false,
+      search: $search,
+      genre: $genre,
+      seasonYear: $year,
+      season: $season,
+      format: $format,
+      status: $status,
+      sort: $sort
+    ) {
+      id
+      title { english romaji }
+      coverImage { extraLarge large }
+      format seasonYear episodes averageScore
+    }
+  }
+}`;
+
+const VALID_SORTS = new Set([
+  "POPULARITY_DESC","SCORE_DESC","TRENDING_DESC",
+  "UPDATED_AT_DESC","START_DATE_DESC","TITLE_ROMAJI",
+]);
+const VALID_FORMATS  = new Set(["TV","MOVIE","OVA","ONA","SPECIAL","MUSIC"]);
+const VALID_STATUSES = new Set(["RELEASING","FINISHED","NOT_YET_RELEASED","CANCELLED","HIATUS"]);
+const VALID_SEASONS  = new Set(["WINTER","SPRING","SUMMER","FALL"]);
+
+router.get("/browse", async (req: Request, res: Response) => {
+  try {
+    const page    = Math.max(1, Math.min(50, Number(req.query.page) || 1));
+    const search  = typeof req.query.search  === "string" && req.query.search.trim()  ? req.query.search.trim()  : undefined;
+    const genre   = typeof req.query.genre   === "string" && req.query.genre.trim()   ? req.query.genre.trim()   : undefined;
+    const rawYear = Number(req.query.year);
+    const year    = rawYear >= 1960 && rawYear <= 2030 ? rawYear : undefined;
+    const season  = typeof req.query.season === "string" && VALID_SEASONS.has(req.query.season.toUpperCase())
+      ? req.query.season.toUpperCase() : undefined;
+    const format  = typeof req.query.format === "string" && VALID_FORMATS.has(req.query.format.toUpperCase())
+      ? req.query.format.toUpperCase() : undefined;
+    const status  = typeof req.query.status === "string" && VALID_STATUSES.has(req.query.status.toUpperCase())
+      ? req.query.status.toUpperCase() : undefined;
+    const rawSort = typeof req.query.sort === "string" ? req.query.sort.toUpperCase() : "POPULARITY_DESC";
+    const sort    = VALID_SORTS.has(rawSort) ? rawSort : "POPULARITY_DESC";
+
+    const variables: Record<string, unknown> = {
+      page, perPage: 18,
+      sort: [sort],
+      ...(search !== undefined && { search }),
+      ...(genre  !== undefined && { genre }),
+      ...(year   !== undefined && { year }),
+      ...(season !== undefined && { season }),
+      ...(format !== undefined && { format }),
+      ...(status !== undefined && { status }),
+    };
+
+    const d = await alQuery<{
+      Page: {
+        pageInfo: { hasNextPage: boolean; total: number };
+        media: AlMedia[];
+      }
+    }>(BROWSE_Q, variables);
+
+    res.json({
+      items: d.Page.media.map(m => ({
+        id:        m.id,
+        title:     title(m),
+        posterUrl: cover(m),
+        type:      m.format ?? null,
+        year:      m.seasonYear ?? null,
+        rating:    m.averageScore ? m.averageScore / 10 : null,
+      })),
+      hasNextPage: d.Page.pageInfo.hasNextPage,
+      total:       d.Page.pageInfo.total,
+    });
+  } catch (e) {
+    console.error("[browse]", e);
+    res.status(502).json({ error: "Failed to browse anime" });
+  }
+});
+
+export default router;

@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "AniStream"
+description = "A full-featured anime streaming site with episode browsing, searching, scheduling, and multi-provider playback (sub/dub/hsub). Backed by AniList data and multiple streaming providers."
+version = "1.0.0"
+id = "artifacts/anistream"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 21080
+
+[services.development]
+run = "pnpm --filter @workspace/anistream run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/anistream", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/anistream/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "21080"
+BASE_PATH = "/"
