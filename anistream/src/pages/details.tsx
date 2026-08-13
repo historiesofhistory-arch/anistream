@@ -20,21 +20,26 @@ interface AnimeDetails {
 interface Season { id: number; title: string; isCurrent: boolean; posterUrl?: string | null; }
 
 // ── Countdown Timer ──────────────────────────────────────────────────────────
-// Shows "Next EP X in Yd Zh Wm Vs" — updates every second.
+// A proper capsule-style countdown timer with a live ticking clock.
+// Shows: EP number badge + live countdown (Xd Xh Xm Xs) updating every second.
+// Styled as a capsule with border, background, and a pulsing dot.
+//
 // Format:
-//   > 24h: "Xd Yh"
-//   1-24h: "Xh Ym"
-//   < 1h:  "Xm Ys" (with seconds for urgency)
-function formatCountdown(ms: number): string {
-  if (ms <= 0) return "Airing now";
+//   > 24h: "Xd Xh Xm"
+//   1-24h: "Xh Xm Xs"
+//   < 1h:  "Xm Xs" (with seconds for urgency)
+function formatCountdown(ms: number): { days: number; hours: number; mins: number; secs: number; text: string } {
+  if (ms <= 0) return { days: 0, hours: 0, mins: 0, secs: 0, text: "Airing now" };
   const s = Math.floor(ms / 1000);
   const d = Math.floor(s / 86400);
   const h = Math.floor((s % 86400) / 3600);
   const m = Math.floor((s % 3600) / 60);
   const sec = s % 60;
-  if (d > 0)  return `${d}d ${h}h`;
-  if (h > 0)  return `${h}h ${String(m).padStart(2, "0")}m`;
-  return `${m}m ${String(sec).padStart(2, "0")}s`;
+  let text: string;
+  if (d > 0)       text = `${d}d ${h}h ${m}m`;
+  else if (h > 0)  text = `${h}h ${m}m ${String(sec).padStart(2, "0")}s`;
+  else             text = `${m}m ${String(sec).padStart(2, "0")}s`;
+  return { days: d, hours: h, mins: m, secs: sec, text };
 }
 
 function CountdownTimer({ airsAt, episode }: { airsAt: number; episode: number }) {
@@ -43,11 +48,27 @@ function CountdownTimer({ airsAt, episode }: { airsAt: number; episode: number }
     const t = setInterval(() => setRemaining(airsAt - Date.now()), 1000);
     return () => clearInterval(t);
   }, [airsAt]);
+
+  const cd = formatCountdown(remaining);
+  const isLive = remaining <= 0;
+
   return (
-    <span className="flex items-center gap-1.5 text-[11px] font-medium text-emerald-400 border border-emerald-500/20 bg-emerald-500/5 px-3 py-1 rounded-full">
-      <Clock className="w-3 h-3" />
-      EP {episode} in {formatCountdown(remaining)}
-    </span>
+    <div className="inline-flex items-center gap-0 rounded-full border border-emerald-500/25 bg-emerald-500/8 overflow-hidden">
+      {/* Episode number capsule */}
+      <span className="flex items-center gap-1 px-3 py-1 bg-emerald-500/15 text-emerald-400 text-[11px] font-black uppercase tracking-wide">
+        EP {episode}
+      </span>
+      {/* Divider */}
+      <span className="w-px h-4 bg-emerald-500/20" />
+      {/* Countdown with live clock */}
+      <span className="flex items-center gap-1.5 px-3 py-1 text-[11px] font-bold tabular-nums text-emerald-300">
+        {/* Pulsing dot — indicates live countdown */}
+        {!isLive && (
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+        )}
+        {cd.text}
+      </span>
+    </div>
   );
 }
 

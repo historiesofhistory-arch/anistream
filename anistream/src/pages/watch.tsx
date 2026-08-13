@@ -104,9 +104,9 @@ function formatCountdown(ms: number): string {
   const h = Math.floor((s % 86400) / 3600);
   const m = Math.floor((s % 3600) / 60);
   const sec = s % 60;
-  if (d > 0)  return `in ${d}d ${h}h`;
-  if (h > 0)  return `in ${h}h ${String(m).padStart(2, "0")}m`;
-  return `in ${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+  if (d > 0)  return `${d}d ${h}h ${m}m`;
+  if (h > 0)  return `${h}h ${m}m ${String(sec).padStart(2, "0")}s`;
+  return `${m}m ${String(sec).padStart(2, "0")}s`;
 }
 
 interface Season {
@@ -1061,11 +1061,17 @@ export function Watch() {
                 {currentEp?.filler && (
                   <span className="px-1 py-0.5 bg-orange-500/20 text-orange-400 text-[9px] font-black uppercase tracking-widest rounded-sm">Filler</span>
                 )}
-                {/* Next episode countdown — shows when nextAiring data is available */}
+                {/* Next episode countdown — capsule style with live clock */}
                 {episodesData?.nextAiring && (
-                  <span className="flex items-center gap-1 text-[10px] font-medium text-emerald-400/80">
-                    <Clock3 className="w-3 h-3" />
-                    Next EP {episodesData.nextAiring.episode} in {formatCountdown(Math.max(0, episodesData.nextAiring.airsAt - now))}
+                  <span className="inline-flex items-center gap-0 rounded-full border border-emerald-500/25 bg-emerald-500/8 overflow-hidden">
+                    <span className="px-2 py-0.5 bg-emerald-500/15 text-emerald-400 text-[9px] font-black uppercase tracking-wide">
+                      EP {episodesData.nextAiring.episode}
+                    </span>
+                    <span className="w-px h-3 bg-emerald-500/20" />
+                    <span className="flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold tabular-nums text-emerald-300">
+                      <span className="w-1 h-1 rounded-full bg-emerald-400 animate-pulse" />
+                      {formatCountdown(Math.max(0, episodesData.nextAiring.airsAt - now))}
+                    </span>
                   </span>
                 )}
               </div>
