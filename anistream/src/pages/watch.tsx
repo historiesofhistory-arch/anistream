@@ -96,7 +96,8 @@ function isEpisodeAired(ep: Episode): boolean {
   return new Date(ep.airDate).getTime() <= Date.now();
 }
 
-// Format milliseconds remaining into a compact countdown string.
+// Format milliseconds remaining into live ticking clock format.
+// Always shows seconds — ticks down every second like a real clock.
 function formatCountdown(ms: number): string {
   if (ms <= 0) return "Airing now";
   const s = Math.floor(ms / 1000);
@@ -104,9 +105,9 @@ function formatCountdown(ms: number): string {
   const h = Math.floor((s % 86400) / 3600);
   const m = Math.floor((s % 3600) / 60);
   const sec = s % 60;
-  if (d > 0)  return `${d}d ${h}h ${m}m`;
-  if (h > 0)  return `${h}h ${m}m ${String(sec).padStart(2, "0")}s`;
-  return `${m}m ${String(sec).padStart(2, "0")}s`;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  if (d > 0) return `${d}d ${pad(h)}:${pad(m)}:${pad(sec)}`;
+  return `${pad(h)}:${pad(m)}:${pad(sec)}`;
 }
 
 interface Season {

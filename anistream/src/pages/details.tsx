@@ -20,26 +20,26 @@ interface AnimeDetails {
 interface Season { id: number; title: string; isCurrent: boolean; posterUrl?: string | null; }
 
 // ── Countdown Timer ──────────────────────────────────────────────────────────
-// A proper capsule-style countdown timer with a live ticking clock.
-// Shows: EP number badge + live countdown (Xd Xh Xm Xs) updating every second.
-// Styled as a capsule with border, background, and a pulsing dot.
+// A proper capsule-style countdown timer with a LIVE ticking clock.
+// Shows: EP number badge + live countdown in HH:MM:SS format (or with days).
+// Updates EVERY SECOND — seconds visibly tick down (59, 58, 57...).
 //
 // Format:
-//   > 24h: "Xd Xh Xm"
-//   1-24h: "Xh Xm Xs"
-//   < 1h:  "Xm Xs" (with seconds for urgency)
-function formatCountdown(ms: number): { days: number; hours: number; mins: number; secs: number; text: string } {
-  if (ms <= 0) return { days: 0, hours: 0, mins: 0, secs: 0, text: "Airing now" };
+//   > 24h: "Xd 12:34:56"
+//   < 24h: "12:34:56"
+//   <= 0:  "Airing now"
+//
+// The clock uses tabular-nums so digits don't shift width as they change.
+function formatCountdown(ms: number): string {
+  if (ms <= 0) return "Airing now";
   const s = Math.floor(ms / 1000);
   const d = Math.floor(s / 86400);
   const h = Math.floor((s % 86400) / 3600);
   const m = Math.floor((s % 3600) / 60);
   const sec = s % 60;
-  let text: string;
-  if (d > 0)       text = `${d}d ${h}h ${m}m`;
-  else if (h > 0)  text = `${h}h ${m}m ${String(sec).padStart(2, "0")}s`;
-  else             text = `${m}m ${String(sec).padStart(2, "0")}s`;
-  return { days: d, hours: h, mins: m, secs: sec, text };
+  const pad = (n: number) => String(n).padStart(2, "0");
+  if (d > 0) return `${d}d ${pad(h)}:${pad(m)}:${pad(sec)}`;
+  return `${pad(h)}:${pad(m)}:${pad(sec)}`;
 }
 
 function CountdownTimer({ airsAt, episode }: { airsAt: number; episode: number }) {
@@ -49,7 +49,7 @@ function CountdownTimer({ airsAt, episode }: { airsAt: number; episode: number }
     return () => clearInterval(t);
   }, [airsAt]);
 
-  const cd = formatCountdown(remaining);
+  const text = formatCountdown(remaining);
   const isLive = remaining <= 0;
 
   return (
@@ -60,13 +60,13 @@ function CountdownTimer({ airsAt, episode }: { airsAt: number; episode: number }
       </span>
       {/* Divider */}
       <span className="w-px h-4 bg-emerald-500/20" />
-      {/* Countdown with live clock */}
+      {/* Live countdown clock — always shows seconds, ticks every 1s */}
       <span className="flex items-center gap-1.5 px-3 py-1 text-[11px] font-bold tabular-nums text-emerald-300">
         {/* Pulsing dot — indicates live countdown */}
         {!isLive && (
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
         )}
-        {cd.text}
+        {text}
       </span>
     </div>
   );
