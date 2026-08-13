@@ -17,7 +17,7 @@ import type { Variants, Transition } from "framer-motion";
 // no collapse, no scroll jump. The new page just fades in over the old one.
 
 export const pageTransitionSpring: Transition = {
-  duration: 0.22,
+  duration: 0.15,
   ease: [0.4, 0, 0.2, 1],  // standard Material ease — smooth, no overshoot
 };
 
@@ -29,12 +29,13 @@ export const pageVariants: Variants = {
     opacity: 1,
     transition: pageTransitionSpring,
   },
+  // EXIT: Very fast fade (50ms) — short enough that the old page disappears
+  // before the scroll-jump is visible, but smooth enough to not feel like
+  // a hard cut. Combined with useLayoutEffect scroll-reset, this gives a
+  // clean "old page fades out → new page fades in" feel with no jhataka.
   exit: {
     opacity: 0,
-    transition: {
-      duration: 0.18,
-      ease: [0.4, 0, 0.2, 1],
-    },
+    transition: { duration: 0.05, ease: [0.4, 0, 0.2, 1] },
   },
 };
 

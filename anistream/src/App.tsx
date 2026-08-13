@@ -114,11 +114,28 @@ function Router() {
   // We ALSO keep the existing `onExitComplete` scroll-to-0 hook so the new
   // page mounts at scrollTop=0 (in the gap between old-page-unmount and
   // new-page-mount that `mode="wait"` provides).
+  // ⚠️ SCROLL RESET + BLUR — runs BEFORE paint when route changes.
+  //
+  // PROBLEM: When navigating from search (scrolled down) → details, the old
+  // page stayed visible at scrollY=300 during its exit animation, then
+  // suddenly jumped to scrollY=0 — creating a visible "niche ki taraf"
+  // (downward) glitch.
+  //
+  // FIX: Reset scroll to 0 IMMEDIATELY when the route key changes, BEFORE
+  // the browser paints. This happens in useLayoutEffect (synchronous, before
+  // paint) so the old page never appears at its old scroll position. Combined
+  // with the instant exit animation (no fade-out duration), the old page
+  // vanishes and scroll resets in the same frame — no visible jump.
   useLayoutEffect(() => {
+    // 1. Blur the active input (prevents mobile browsers from scrolling
+    //    the focused element back into view during navigation)
     const active = document.activeElement;
     if (active && active instanceof HTMLElement && active.tagName === 'INPUT') {
       active.blur();
     }
+    // 2. Reset scroll to top INSTANTLY (before paint, so the user never
+    //    sees the old page at its scrolled position)
+    window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior });
   }, [key]);
 
   return (
@@ -127,11 +144,6 @@ function Router() {
       <AnimatePresence
         mode="wait"
         initial={false}
-        onExitComplete={() => {
-          // Old page is gone. Snap scroll to top instantly so the new page
-          // (about to mount) starts at scrollTop=0 with no visible jump.
-          window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior });
-        }}
       >
         <motion.div
           key={key}
