@@ -374,8 +374,8 @@ router.get("/anime/search", async (req: Request, res: Response) => {
 //   }
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SCHED_Q = `query($s: Int, $e: Int) {
-  Page(page: 1, perPage: 100) {
+const SCHED_Q = `query($s: Int, $e: Int, $page: Int) {
+  Page(page: $page, perPage: 50) {
     airingSchedules(airingAt_greater: $s, airingAt_lesser: $e, sort: TIME) {
       episode airingAt
       media { id title { english romaji } coverImage { extraLarge } format }
@@ -387,6 +387,20 @@ interface AiringEntry {
   episode:  number;
   airingAt: number;
   media:    AlMedia;
+}
+
+// Fetch ALL airing schedules for a week range — paginated.
+// AniList caps perPage at 50 for airingSchedules, so we fetch multiple pages.
+// A typical week has ~100-150 episodes, so 3 pages (150 items) is enough.
+async function fetchAllAiringSchedules(s: number, e: number): Promise<AiringEntry[]> {
+  const all: AiringEntry[] = [];
+  for (let page = 1; page <= 3; page++) {
+    const d = await alQuery<{ Page: { airingSchedules: AiringEntry[] } }>(SCHED_Q, { s, e, page });
+    const eps = d.Page.airingSchedules;
+    all.push(...eps);
+    if (eps.length < 50) break; // last page
+  }
+  return all;
 }
 
 // Returns the offset in minutes from UTC for `tz` at the given moment.
@@ -585,8 +599,8 @@ const getSchedule = mkSwr<unknown>(30 * 60_000, 15 * 60_000, async (key: string)
   // When USE_MIRURO_SCHEDULE=false: AniList provides ALL episodes (past + upcoming).
   // Deduplicate: skip items already added by Miruro.
   {
-    const d = await alQuery<{ Page: { airingSchedules: AiringEntry[] } }>(SCHED_Q, { s, e });
-    for (const a of d.Page.airingSchedules) {
+    const allSchedules = await fetchAllAiringSchedules(s, e);
+    for (const a of allSchedules) {
       const key = `${a.media.id}-${a.episode}`;
       if (!miruroKeys.has(key)) {
         addScheduleItem(a.media.id, title(a.media), cover(a.media), a.episode, a.airingAt);
