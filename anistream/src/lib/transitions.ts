@@ -1,14 +1,17 @@
 // shared/transition-variants.ts
 // Centralized framer-motion variants — single source of truth for the whole site.
-// Goal: SMOOTH + POLISHED. No "jhalak" of old page, no scroll jump.
+// Goal: SMOOTH + POLISHED. No "jhalak", no scroll leak, no "niche khulna".
 //
-// Strategy: CROSS-FADE with position:absolute on the exiting page.
-// - Old page gets position:absolute so it "floats" and doesn't affect scroll
-// - Old page fades out (0.2s) while new page fades in (0.2s) simultaneously
-// - New page starts at scrollY=0 naturally (fresh mount)
-// - NO useLayoutEffect scroll reset — the old page's scroll doesn't matter
-//   because it's position:absolute (taken out of flow)
-// - No gap, no blank state, no jhalak
+// Strategy: mode="wait" with INSTANT exit (0ms) + smooth fade-in (0.25s).
+// - Old page vanishes INSTANTLY (no fade-out → no visible scroll leak)
+// - Scroll resets to 0 in useLayoutEffect (before paint, before new page mounts)
+// - New page mounts at scrollY=0 → fades in smoothly over 0.25s
+// - No gap because exit is 0ms — the new page starts mounting immediately after
+//
+// WHY NOT mode="sync" (cross-fade):
+//   With sync, both pages render simultaneously. The NEW page inherits the
+//   window's scroll position from the OLD page → details page opens at
+//   scrollY=400 instead of 0. This was the "niche khul ja raha hai" bug.
 
 import type { Variants, Transition } from "framer-motion";
 
@@ -25,17 +28,13 @@ export const pageVariants: Variants = {
     opacity: 1,
     transition: pageTransitionSpring,
   },
-  // EXIT: position:absolute takes the old page OUT of the document flow.
-  // This means the old page's scroll position doesn't affect the new page.
-  // The old page "floats" on top and fades out — the user never sees it
-  // scroll up or jump. Combined with opacity fade = clean cross-fade.
+  // EXIT: INSTANT (0ms) — old page disappears immediately.
+  // This prevents scroll leak: the old page vanishes before the new page
+  // mounts, so the new page starts at scrollY=0 (after useLayoutEffect reset).
+  // No gap is visible because the new page starts fading in immediately after.
   exit: {
     opacity: 0,
-    position: "absolute" as const,
-    top: 0,
-    left: 0,
-    right: 0,
-    transition: { duration: 0.2, ease: [0.4, 0, 0.2, 1] },
+    transition: { duration: 0 },
   },
 };
 

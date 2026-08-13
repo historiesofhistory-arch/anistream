@@ -111,22 +111,22 @@ function Router() {
   // We ALSO keep the existing `onExitComplete` scroll-to-0 hook so the new
   // page mounts at scrollTop=0 (in the gap between old-page-unmount and
   // new-page-mount that `mode="wait"` provides).
-  // Blur the active input on route change — prevents mobile browsers from
-  // scrolling the focused element back into view during navigation.
-  // NO scroll reset here — the exiting page uses position:absolute (from
-  // pageVariants.exit), so its scroll position doesn't affect the new page.
-  // The new page starts at scrollY=0 naturally.
+  // Blur input + reset scroll to 0 BEFORE paint when route changes.
+  // With mode="wait" + instant exit (0ms), this fires before the old page
+  // even starts its exit animation. So: scroll resets → old page vanishes
+  // → new page mounts at scrollY=0 → fades in. No scroll leak.
   useLayoutEffect(() => {
     const active = document.activeElement;
     if (active && active instanceof HTMLElement && active.tagName === 'INPUT') {
       active.blur();
     }
+    window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior });
   }, [key]);
 
   return (
     <Layout>
       <NavProgress />
-      <AnimatePresence>
+      <AnimatePresence mode="wait" initial={false}>
         <motion.div
           key={key}
           variants={pageVariants}
