@@ -1,24 +1,21 @@
 // shared/transition-variants.ts
 // Centralized framer-motion variants — single source of truth for the whole site.
-// Goal: SMOOTH + POLISHED. No "collapsing" or "up-down" glitches on page change.
-// Simple opacity crossfade — clean, fast, no janky spring overshoot.
+// Goal: SMOOTH + POLISHED. No "collapsing", no "crash", no jhataka.
+//
+// Strategy: CROSS-FADE using mode="sync" (both pages visible simultaneously).
+// - Old page fades out while new page fades in AT THE SAME TIME
+// - No gap/blank state between exit and enter
+// - Old page gets position:absolute so it doesn't push new page down
+// - Scroll resets to 0 instantly in useLayoutEffect (before paint)
+//
+// This is how Netflix, Crunchyroll, etc. do page transitions — clean
+// cross-fade with no visible gap.
 
 import type { Variants, Transition } from "framer-motion";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PAGE TRANSITIONS
-// ─────────────────────────────────────────────────────────────────────────────
-// Strategy: SIMPLE OPACITY CROSSFADE. No scale, no y-offset, no blur — these
-// were causing the "previous page collapses" + "up-down then navigate" bugs
-// the user reported. A clean opacity-only transition feels polished and
-// professional, like modern streaming apps (Netflix, Crunchyroll).
-//
-// Using mode="wait" with instant opacity transitions = no visible gap,
-// no collapse, no scroll jump. The new page just fades in over the old one.
-
 export const pageTransitionSpring: Transition = {
-  duration: 0.15,
-  ease: [0.4, 0, 0.2, 1],  // standard Material ease — smooth, no overshoot
+  duration: 0.2,
+  ease: [0.4, 0, 0.2, 1],
 };
 
 export const pageVariants: Variants = {
@@ -29,13 +26,11 @@ export const pageVariants: Variants = {
     opacity: 1,
     transition: pageTransitionSpring,
   },
-  // EXIT: Very fast fade (50ms) — short enough that the old page disappears
-  // before the scroll-jump is visible, but smooth enough to not feel like
-  // a hard cut. Combined with useLayoutEffect scroll-reset, this gives a
-  // clean "old page fades out → new page fades in" feel with no jhataka.
+  // EXIT: Same duration as enter (0.2s) for a symmetric cross-fade.
+  // The old page fades out WHILE the new page fades in — no gap.
   exit: {
     opacity: 0,
-    transition: { duration: 0.05, ease: [0.4, 0, 0.2, 1] },
+    transition: { duration: 0.2, ease: [0.4, 0, 0.2, 1] },
   },
 };
 

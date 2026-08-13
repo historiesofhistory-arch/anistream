@@ -141,10 +141,7 @@ function Router() {
   return (
     <Layout>
       <NavProgress />
-      <AnimatePresence
-        mode="wait"
-        initial={false}
-      >
+      <AnimatePresence>
         <motion.div
           key={key}
           variants={pageVariants}
