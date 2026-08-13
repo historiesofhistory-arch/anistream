@@ -38,7 +38,7 @@ function typeLabel(type: string | null | undefined): string | null {
 function typePillClasses(label: string | null): string {
   switch (label) {
     case "TV":      return "bg-blue-500/25 border-blue-400/40 text-blue-300 shadow-[0_0_6px_rgba(59,130,246,0.35)]";
-    case "Movie":   return "bg-violet-500/25 border-violet-400/40 text-violet-300 shadow-[0_0_6px_rgba(139,92,246,0.35)]";
+    case "Movie":   return "bg-violet-500/25 border-violet-400/40 text-violet-300 shadow-[0_0_6px_rgba(229,43,80,0.35)]";
     case "OVA":     return "bg-cyan-500/25 border-cyan-400/40 text-cyan-300 shadow-[0_0_6px_rgba(6,182,212,0.35)]";
     case "ONA":     return "bg-emerald-500/25 border-emerald-400/40 text-emerald-300 shadow-[0_0_6px_rgba(16,185,129,0.35)]";
     case "Special": return "bg-amber-500/25 border-amber-400/40 text-amber-300 shadow-[0_0_6px_rgba(245,158,11,0.35)]";

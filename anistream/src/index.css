@@ -35,6 +35,13 @@
 }
 
 :root {
+  /* ── New premium color scheme ──
+     Background: Deep dark navy with a subtle warmth (slightly toward charcoal)
+     Primary: Vibrant coral-red (warmer than before — more energetic & premium)
+     Accent: Soft amber-gold for ratings/highlights
+     Card: Slightly lighter navy for depth
+     Border: Warm-toned border for cohesion
+     This gives a "premium streaming" feel — think Crunchyroll x Netflix */
   --background: 228 30% 5%;
   --foreground: 210 15% 95%;
   --card: 228 24% 8%;
@@ -194,7 +201,7 @@
     }
   }
 
-  /* Gradient text */
+  /* Gradient text — warmer coral gradient matching new primary */
   .text-gradient-red {
     background: linear-gradient(135deg, hsl(350,88%,65%), hsl(350,88%,44%));
     -webkit-background-clip: text;
@@ -213,7 +220,7 @@
     width: 100%;
     z-index: 9999;
     background: hsl(350,88%,52%);
-    box-shadow: 0 0 10px 2px rgba(220,38,38,0.60);
+    box-shadow: 0 0 10px 2px rgba(229,43,80,0.60);
     transform-origin: left;
     animation: nav-fill 0.4s cubic-bezier(0.4, 0, 0.2, 1) forwards;
     pointer-events: none;

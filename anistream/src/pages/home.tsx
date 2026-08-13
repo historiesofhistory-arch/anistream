@@ -14,7 +14,7 @@ import { squishyTap } from "../lib/transitions";
 function heroTypeBadgeClasses(label: string | null) {
   switch (label) {
     case "TV":      return "bg-blue-500/20 border-blue-400/35 text-blue-300 shadow-[0_0_8px_rgba(59,130,246,0.3)]";
-    case "Movie":   return "bg-violet-500/20 border-violet-400/35 text-violet-300 shadow-[0_0_8px_rgba(139,92,246,0.3)]";
+    case "Movie":   return "bg-violet-500/20 border-violet-400/35 text-violet-300 shadow-[0_0_8px_rgba(229,43,80,0.3)]";
     case "OVA":     return "bg-cyan-500/20 border-cyan-400/35 text-cyan-300 shadow-[0_0_8px_rgba(6,182,212,0.3)]";
     case "ONA":     return "bg-emerald-500/20 border-emerald-400/35 text-emerald-300 shadow-[0_0_8px_rgba(16,185,129,0.3)]";
     default:        return "bg-black/55 border-white/15 text-white/80";
@@ -159,10 +159,11 @@ function HeroBanner({ items }: { items: HeroItem[] }) {
               <div className="absolute inset-0 shimmer opacity-35" aria-hidden />
             )}
 
-            {/* Gradient overlays */}
-            {/* Bottom fade for text legibility; top is transparent so image fills header-to-bottom */}
-            <div className="absolute inset-0 bg-gradient-to-t from-[#08090f] via-[#08090f]/55 to-transparent" />
-            <div className="absolute inset-0 bg-gradient-to-r from-[#08090f]/75 via-[#08090f]/20 to-transparent" />
+            {/* Gradient overlays — improved for premium feel
+                Bottom: stronger fade for text legibility
+                Left: subtle vignette for depth */}
+            <div className="absolute inset-0 bg-gradient-to-t from-[#08090f] via-[#08090f]/60 to-transparent" />
+            <div className="absolute inset-0 bg-gradient-to-r from-[#08090f]/80 via-[#08090f]/25 to-transparent" />
 
             {/* Content */}
             <div className="absolute bottom-0 left-0 right-0 px-4 sm:px-8 pb-14 sm:pb-16 space-y-3">
@@ -172,7 +173,7 @@ function HeroBanner({ items }: { items: HeroItem[] }) {
                 {/* Type badge */}
                 {typeLabel && (
                   <span className={cn(
-                    "flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide px-2.5 py-1 rounded-lg border backdrop-blur-sm",
+                    "flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide px-2.5 py-1 rounded-lg border",
                     heroTypeBadgeClasses(typeLabel)
                   )}>
                     {typeLabel === "Movie" ? <Film className="w-3 h-3" /> : <Tv2 className="w-3 h-3" />}
@@ -182,7 +183,7 @@ function HeroBanner({ items }: { items: HeroItem[] }) {
 
                 {/* Trending rank */}
                 {trendRank <= 3 && (
-                  <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide px-2 py-1 rounded-lg bg-primary/90 text-white backdrop-blur-sm shadow-[0_0_10px_rgba(229,43,80,0.4)]">
+                  <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide px-2 py-1 rounded-lg bg-primary/90 text-white shadow-[0_0_10px_rgba(229,43,80,0.4)]">
                     <Flame className="w-3 h-3 fill-white" />
                     #{trendRank} Trending
                   </span>
@@ -210,9 +211,9 @@ function HeroBanner({ items }: { items: HeroItem[] }) {
                 )}
               </div>
 
-              {/* Title */}
-              <h1 className="font-display font-bold text-white leading-tight drop-shadow-xl line-clamp-2"
-                style={{ fontSize: "clamp(1.35rem, 5.5vw, 2.6rem)" }}>
+              {/* Title — bigger, bolder, more premium */}
+              <h1 className="font-display font-black text-white leading-[1.05] tracking-tight drop-shadow-2xl line-clamp-2"
+                style={{ fontSize: "clamp(1.5rem, 6vw, 3rem)" }}>
                 {item.title}
               </h1>
 
@@ -275,7 +276,7 @@ function HeroBanner({ items }: { items: HeroItem[] }) {
                 <motion.div whileTap={squishyTap} style={{ willChange: "transform" }}>
                 <Link href={`/anime/${item.id}`}
                   className="tap-scale flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/10 border border-white/20
-                    text-white text-sm font-semibold hover:bg-white/18 transition-colors backdrop-blur-sm whitespace-nowrap"
+                    text-white text-sm font-semibold hover:bg-white/18 transition-colors whitespace-nowrap"
                 >
                   <Plus className="w-4 h-4" />My List
                 </Link>
@@ -285,7 +286,7 @@ function HeroBanner({ items }: { items: HeroItem[] }) {
                 <motion.div whileTap={squishyTap} style={{ willChange: "transform" }}>
                 <Link href={`/anime/${item.id}`}
                   className="tap-scale w-10 h-10 flex items-center justify-center rounded-full bg-white/10 border border-white/15
-                    hover:bg-white/20 transition-colors backdrop-blur-sm"
+                    hover:bg-white/20 transition-colors"
                 >
                   <Info className="w-4 h-4 text-white" />
                 </Link>
@@ -316,7 +317,7 @@ function HeroBanner({ items }: { items: HeroItem[] }) {
           rounded-r-2xl
           bg-gradient-to-r from-black/40 to-transparent
           hover:from-black/65 hover:to-black/10
-          backdrop-blur-[2px]
+         
           transition-all duration-200"
         aria-label="Previous"
       >
@@ -329,7 +330,7 @@ function HeroBanner({ items }: { items: HeroItem[] }) {
           rounded-l-2xl
           bg-gradient-to-l from-black/40 to-transparent
           hover:from-black/65 hover:to-black/10
-          backdrop-blur-[2px]
+         
           transition-all duration-200"
         aria-label="Next"
       >
@@ -465,14 +466,14 @@ function ContinueWatchingSection() {
                 <motion.div
                   whileHover={{ scale: 1.1 }}
                   whileTap={{ scale: 0.95 }}
-                  className="w-12 h-12 rounded-full bg-primary/90 backdrop-blur-sm flex items-center justify-center shadow-lg group-hover:bg-primary transition-colors"
+                  className="w-12 h-12 rounded-full bg-primary/90 flex items-center justify-center shadow-lg group-hover:bg-primary transition-colors"
                 >
                   <Play className="w-4 h-4 fill-white text-white ml-0.5" />
                 </motion.div>
               </div>
 
               {/* Episode number badge — top right */}
-              <div className="absolute top-2 right-2 px-2 py-0.5 rounded-md bg-black/70 backdrop-blur-sm border border-white/10">
+              <div className="absolute top-2 right-2 px-2 py-0.5 rounded-md bg-black/70 border border-white/10">
                 <span className="text-[10px] font-black tabular-nums text-white">
                   EP {entry.episodeNumber}
                 </span>

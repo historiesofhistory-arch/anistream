@@ -4,7 +4,7 @@ import { Search, SlidersHorizontal, X, ChevronDown, Star, Tv2, Film } from "luci
 import { useQuery } from "@tanstack/react-query";
 import { cn } from "../lib/utils";
 import { apiUrl } from "../lib/api";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { staggerContainer, staggerChild } from "../lib/transitions";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -328,18 +328,26 @@ export function Browse() {
       )}
 
       {/* ── Grid ── */}
-      <motion.div
-        variants={staggerContainer}
-        initial="hidden"
-        animate="visible"
-        className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3"
-      >
-        {showingLoading
-          ? <GridSkeleton count={18} />
-          : allItems.map(item => <BrowseCard key={item.id} item={item} />)
-        }
-        {isFetching && filters.page > 1 && <GridSkeleton count={6} />}
-      </motion.div>
+      {/* Key changes when filters change so AnimatePresence remounts the grid
+          and re-runs the stagger animation on every search/filter change.
+          Without this key, Framer Motion only runs the stagger once on initial
+          mount — subsequent searches don't animate. */}
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={`${filters.search}-${filters.genre}-${filters.year}-${filters.season}-${filters.format}-${filters.status}-${filters.sort}-${filters.page === 1 ? 'p1' : 'p2'}`}
+          variants={staggerContainer}
+          initial="hidden"
+          animate="visible"
+          exit={{ opacity: 0, transition: { duration: 0.1 } }}
+          className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3"
+        >
+          {showingLoading
+            ? <GridSkeleton count={18} />
+            : allItems.map(item => <BrowseCard key={item.id} item={item} />)
+          }
+          {isFetching && filters.page > 1 && <GridSkeleton count={6} />}
+        </motion.div>
+      </AnimatePresence>
 
       {/* ── Empty ── */}
       {!isFetching && allItems.length === 0 && (

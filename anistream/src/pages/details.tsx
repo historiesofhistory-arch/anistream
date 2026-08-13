@@ -166,7 +166,7 @@ export function Details() {
         {/* Back */}
         <button onClick={() => history.back()}
           className="absolute top-4 left-4 z-20 flex items-center gap-1.5 px-3 py-1.5 rounded-xl
-            bg-black/40 backdrop-blur-sm text-sm font-medium text-white/75 hover:text-white
+            bg-black/40 text-sm font-medium text-white/75 hover:text-white
             border border-white/10 hover:border-white/22 transition-all"
         >
           <ChevronLeft className="w-4 h-4" />Back
