@@ -22,6 +22,8 @@ export interface ContinueWatchingEntry {
   title:          string;
   posterUrl:      string;
   watchedAt:      number;  // ms timestamp
+  lang:           string;  // audio language: "sub" | "dub" | "hsub" | custom
+  provider:       string;  // provider id: "core" | "vidstream" | "aninico" | etc.
 }
 
 const STORAGE_KEY = "anistream:continue-watching";
@@ -38,7 +40,17 @@ function readFromStorage(): ContinueWatchingEntry[] {
       typeof e.episodeId === "number" &&
       typeof e.title === "string" &&
       typeof e.posterUrl === "string"
-    );
+    ).map(e => ({
+      animeId: e.animeId,
+      episodeId: e.episodeId,
+      episodeNumber: e.episodeNumber,
+      title: e.title,
+      posterUrl: e.posterUrl,
+      watchedAt: e.watchedAt,
+      // Backward compat: old entries without lang/provider get defaults
+      lang: e.lang || "sub",
+      provider: e.provider || "core",
+    }));
   } catch {
     return [];
   }
@@ -73,13 +85,26 @@ function writeToStorage(entries: ContinueWatchingEntry[]): boolean {
  * If the same anime already exists, update its episode + timestamp.
  * The list is sorted by most recently watched first.
  * If localStorage is full, oldest entries are removed to make room.
+ *
+ * @param entry - Must include animeId, episodeId, episodeNumber, title, posterUrl
+ * @param lang  - Audio language the user was watching in (e.g., "sub", "dub", "hsub")
+ * @param provider - Provider the user was watching on (e.g., "core", "vidstream")
  */
-export function saveToContinueWatching(entry: Omit<ContinueWatchingEntry, "watchedAt">) {
+export function saveToContinueWatching(
+  entry: Omit<ContinueWatchingEntry, "watchedAt" | "lang" | "provider">,
+  lang: string = "sub",
+  provider: string = "core",
+) {
   const entries = readFromStorage();
   // Remove any existing entry for this anime (so we don't show duplicates)
   const filtered = entries.filter(e => e.animeId !== entry.animeId);
   // Prepend the new entry
-  const newEntry: ContinueWatchingEntry = { ...entry, watchedAt: Date.now() };
+  const newEntry: ContinueWatchingEntry = {
+    ...entry,
+    lang,
+    provider,
+    watchedAt: Date.now(),
+  };
   let updated = [newEntry, ...filtered].slice(0, MAX_ENTRIES);
 
   // Try to write — if it fails (quota), writeToStorage handles trimming

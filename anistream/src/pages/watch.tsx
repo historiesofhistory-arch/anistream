@@ -207,19 +207,30 @@ export function Watch() {
   const id = Number(animeId);
   const [, setLocation] = useLocation();
 
+  // Read lang and provider from URL query params (set by Continue Watching links).
+  // This allows the user to resume in the same audio language + provider they
+  // were using when they last watched the anime.
+  // wouter doesn't have a built-in searchParams hook, so we parse it manually.
+  const searchParams = typeof window !== 'undefined'
+    ? new URLSearchParams(window.location.search)
+    : null;
+  const urlLang = searchParams?.get('lang');
+  const urlProvider = searchParams?.get('provider');
+
   // Episode selection: initialize ONCE from URL param — never reset by effects
   const [selectedEpisodeId, setSelectedEpisodeId] = useState<number | null>(
     episodeIdParam ? Number(episodeIdParam) : null
   );
   // Default straight to Japanese/sub — no upfront "choose audio" step.
-  // Users can still switch to another real track afterwards via the Audio
-  // button. Not locked to "sub"|"dub" anymore — a provider can report any
-  // real language code (e.g. AniDB's own code for a second dub track).
-  const [selectedLang, setSelectedLang] = useState<string>("sub");
+  // But if the URL has a lang param (from Continue Watching), use that instead.
+  const [selectedLang, setSelectedLang] = useState<string>(urlLang || "sub");
   // Which provider tab is active. Persists across episode/lang changes —
   // switching episodes keeps using the same provider, exactly like the user
   // asked, instead of silently resetting to the default every time.
-  const [activeProvider, setActiveProvider] = useState<ProviderId>(DEFAULT_PROVIDER);
+  // If URL has a provider param (from Continue Watching), use that.
+  const [activeProvider, setActiveProvider] = useState<ProviderId>(
+    (urlProvider as ProviderId) || DEFAULT_PROVIDER
+  );
 
   // ── Stream prefetch on episode hover ─────────────────────────────────────
   // When the user hovers an episode card for >100 ms, prefetch its stream URL
@@ -477,14 +488,18 @@ export function Watch() {
     if (!stream?.streamUrl || !selectedEpisodeId) return;
     const ep = episodes.find((e) => e.id === selectedEpisodeId);
     if (!ep) return;
-    saveToContinueWatching({
-      animeId:       id,
-      episodeId:     selectedEpisodeId,
-      episodeNumber: ep.number,
-      title:         animeDetails?.title || "",
-      posterUrl:     animeDetails?.posterUrl || animeDetails?.bannerUrl || "",
-    });
-  }, [stream?.streamUrl, selectedEpisodeId, id, episodes, animeDetails?.title, animeDetails?.posterUrl, animeDetails?.bannerUrl]);
+    saveToContinueWatching(
+      {
+        animeId:       id,
+        episodeId:     selectedEpisodeId,
+        episodeNumber: ep.number,
+        title:         animeDetails?.title || "",
+        posterUrl:     animeDetails?.posterUrl || animeDetails?.bannerUrl || "",
+      },
+      selectedLang,     // pass the user's selected audio language
+      activeProvider,   // pass the user's selected provider
+    );
+  }, [stream?.streamUrl, selectedEpisodeId, id, episodes, animeDetails?.title, animeDetails?.posterUrl, animeDetails?.bannerUrl, selectedLang, activeProvider]);
 
   // ── Episode navigation ───────────────────────────────────────────────────
 

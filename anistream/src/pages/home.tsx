@@ -440,7 +440,7 @@ function ContinueWatchingSection() {
         {entries.map((entry, i) => (
           <Link
             key={`${entry.animeId}-${entry.episodeId}`}
-            href={`/watch/${entry.animeId}/${entry.episodeId}`}
+            href={`/watch/${entry.animeId}/${entry.episodeId}?lang=${entry.lang}&provider=${entry.provider}`}
             className="group relative shrink-0 w-[240px] sm:w-[280px] block overflow-hidden rounded-xl border border-white/[0.06] hover:border-primary/30 transition-all bg-black"
           >
             {/* 16:9 aspect video-style card */}

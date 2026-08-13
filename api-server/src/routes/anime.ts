@@ -345,11 +345,24 @@ router.get("/anime/search", async (req: Request, res: Response) => {
 // GET /anime/schedule?date=YYYY-MM-DD&tz=Asia/Kolkata
 //
 // Returns the Mon–Sun week containing `date` (defaults to today), with all
-// airing schedules from AniList grouped by day in the requested timezone.
-// AniList's airingSchedules covers ~3 months back and ~1 month forward, so
-// past and near-future weeks are available. Times are formatted in the
-// requested timezone so the page matches what the user sees in their local
-// clock.
+// airing schedules grouped by day in the requested timezone.
+//
+// DATA SOURCE — 2-tier fallback:
+//
+//   TIER 1 (OPTIONAL ADDON): SCHEDULE_API_URL env var
+//     If set (e.g., SCHEDULE_API_URL=https://miruro-api-original.onrender.com),
+//     the backend fetches airing data from that REST API instead of AniList
+//     GraphQL. The API must return JSON with results[] where each item has:
+//       { id, title: { english, romaji }, coverImage: { extraLarge },
+//         nextAiringEpisode: { episode, airingAt, timeUntilAiring } }
+//     This is compatible with the miruro/AniList-style API format.
+//
+//   TIER 2 (DEFAULT FALLBACK): AniList GraphQL
+//     Uses the SCHED_Q query to fetch airingSchedules for the week range.
+//     This is the original implementation, always available.
+//
+// If TIER 1 fails (network error, bad response, no data), the backend
+// silently falls back to TIER 2. The site is never affected by addon failures.
 //
 // Response shape:
 //   {
@@ -357,6 +370,7 @@ router.get("/anime/search", async (req: Request, res: Response) => {
 //     weekStart: "YYYY-MM-DD",
 //     weekEnd:   "YYYY-MM-DD",
 //     timezone:  "Asia/Kolkata",
+//     source:    "addon" | "anilist",
 //   }
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -450,10 +464,7 @@ const getSchedule = mkSwr<unknown>(30 * 60_000, 15 * 60_000, async (key: string)
   const s = Math.floor(mondayMidnightLocal / 1000);
   const e = Math.floor(sundayEndLocal / 1000);
 
-  // Query AniList for all schedules airing in this range.
-  const d = await alQuery<{ Page: { airingSchedules: AiringEntry[] } }>(SCHED_Q, { s, e });
-
-  // Precompute the 7 days of the week with their dates in target TZ.
+  // Precompute formatters (shared between both data sources)
   const dateFmt    = new Intl.DateTimeFormat("en-CA", {
     year: "numeric", month: "2-digit", day: "2-digit", timeZone: tz,
   });
@@ -482,22 +493,100 @@ const getSchedule = mkSwr<unknown>(30 * 60_000, 15 * 60_000, async (key: string)
     };
   });
 
-  // Group airing items by their local date in target TZ.
   const itemsByDate = new Map<string, ScheduleItem[]>();
   const now = Date.now();
 
-  for (const a of d.Page.airingSchedules) {
-    const dt      = new Date(a.airingAt * 1000);
+  // Helper: add an airing entry to the correct day bucket
+  function addScheduleItem(anilistId: number, animeTitle: string, posterUrl: string, episode: number, airingAtSec: number) {
+    const dt = new Date(airingAtSec * 1000);
     const dateStr = dateFmt.format(dt);
     if (!itemsByDate.has(dateStr)) itemsByDate.set(dateStr, []);
     itemsByDate.get(dateStr)!.push({
-      id:        a.media.id,
-      title:     title(a.media),
-      posterUrl: cover(a.media),
-      episode:   a.episode,
+      id:        anilistId,
+      title:     animeTitle,
+      posterUrl: posterUrl,
+      episode:   episode,
       time:      timeFmt.format(dt),
-      aired:     a.airingAt * 1000 < now,
+      aired:     airingAtSec * 1000 < now,
     });
+  }
+
+  // ── TIER 1 (OPTIONAL ADDON): SCHEDULE_API_URL ────────────────────────────
+  // If the env var is set, try fetching from the addon API first.
+  // The API returns a flat list of airing anime (sorted by airingAt).
+  // We filter to only those airing within our week range [s, e].
+  const scheduleApiUrl = process.env.SCHEDULE_API_URL?.replace(/\/+$/, "");
+  let source = "anilist";
+
+  if (scheduleApiUrl) {
+    try {
+      // Fetch all pages that might contain items in our week range.
+      // The API returns 20 items per page sorted by airingAt (soonest first).
+      // We fetch pages until we find items outside our week range.
+      let page = 1;
+      let foundInWeek = false;
+      let pastWeek = false;
+
+      while (!pastWeek && page <= 10) {
+        const res = await fetch(`${scheduleApiUrl}/schedule?page=${page}`, {
+          headers: { "User-Agent": UA, "Accept": "application/json" },
+          signal: AbortSignal.timeout(8000),
+        });
+        if (!res.ok) throw new Error(`addon HTTP ${res.status}`);
+        const json = await res.json() as {
+          results?: Array<{
+            id: number;
+            title: { english?: string | null; romaji?: string | null };
+            coverImage: { extraLarge?: string | null; large?: string | null };
+            nextAiringEpisode?: { episode: number; airingAt: number; timeUntilAiring: number } | null;
+            airingAt?: number;
+          }>;
+          hasNextPage?: boolean;
+        };
+        if (!json.results?.length) break;
+
+        for (const item of json.results) {
+          const na = item.nextAiringEpisode;
+          if (!na || !na.airingAt) continue;
+          // airingAt is in seconds
+          if (na.airingAt >= s && na.airingAt <= e) {
+            foundInWeek = true;
+            addScheduleItem(
+              item.id,
+              item.title.english ?? item.title.romaji ?? "Unknown",
+              item.coverImage.extraLarge ?? item.coverImage.large ?? "",
+              na.episode,
+              na.airingAt,
+            );
+          } else if (na.airingAt > e) {
+            // Past our week range — stop fetching more pages
+            pastWeek = true;
+            break;
+          }
+        }
+
+        if (!json.hasNextPage) break;
+        page++;
+      }
+
+      if (foundInWeek) {
+        source = "addon";
+      } else {
+        // Addon returned data but nothing in our week — fall back to AniList
+        throw new Error("addon returned no items in week range");
+      }
+    } catch {
+      // Addon failed — silently fall back to AniList
+      source = "anilist";
+    }
+  }
+
+  // ── TIER 2 (DEFAULT FALLBACK): AniList GraphQL ──────────────────────────
+  if (source === "anilist") {
+    const d = await alQuery<{ Page: { airingSchedules: AiringEntry[] } }>(SCHED_Q, { s, e });
+    for (const a of d.Page.airingSchedules) {
+      addScheduleItem(a.media.id, title(a.media), cover(a.media), a.episode, a.airingAt);
+    }
   }
 
   // Attach each day's items.
@@ -515,6 +604,7 @@ const getSchedule = mkSwr<unknown>(30 * 60_000, 15 * 60_000, async (key: string)
     weekStart,
     weekEnd,
     timezone: tz,
+    source,
   };
 });
 
