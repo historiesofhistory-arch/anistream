@@ -73,17 +73,16 @@ Update `WEB_DOMAIN` env var to match and redeploy.
 | `PORT`             | No*      | `8080`  | HTTP port. Render/Railway auto-inject.                       |
 | `BASE_PATH`        | Yes      | `/`     | Vite base path. Use `/` for root deployment.                 |
 | `WEB_DOMAIN`       | Rec.     | —       | Full URL for CORS lockdown (e.g. `https://stream-foo.streams-are-annex.net`). |
-| `EMBED_API_URL`    | No       | Koyeb†  | Origin of YOUR hosted embed/stream API. Used by the Core, AniNico, and VidStream providers. Set this if you've hosted the embed API elsewhere. |
+| `EMBED_API_URL`    | **Yes**  | —       | Origin of YOUR hosted embed/stream API. Used by the Core, AniNico, and VidStream providers. **Required in production** — host your own instance and set its origin here. |
 | `VITE_API_BASE_URL`| No       | empty   | BUILD-time. Set only if frontend should call a separate API origin directly. Leave empty for same-origin (normal full-stack Docker deploy). |
 | `NODE_ENV`         | No       | `prod`  | `production` or `development`.                               |
 | `STATIC_DIR`       | No       | —       | Set by Dockerfile. Don't override.                           |
 
 \* Render and Railway inject `PORT` automatically. Local Docker uses `8080`.
-† Defaults to `https://worthwhile-audrey-botnestbots-d45e9faf.koyeb.app` if `EMBED_API_URL` is unset.
 
 ### About `EMBED_API_URL`
 
-The "Core" provider (the recommended default server) calls an embed API to resolve stream URLs. By default it points at the original Koyeb-hosted instance. If you've hosted your own copy of the embed API anywhere — Koyeb, Railway, Render, or your own domain like `https://stream-foo.anix.at` — set `EMBED_API_URL` to that origin and the backend will use it automatically. No code changes needed.
+The "Core" provider (the recommended default server) calls an embed API to resolve stream URLs. You MUST host your own instance of the embed API (Koyeb, Railway, Render, or your own domain like `https://stream-foo.anix.at`) and set `EMBED_API_URL` to its origin. The backend will use it automatically — no code changes needed.
 
 The AniNico and VidStream providers also use the same `EMBED_API_URL` (they all share the same upstream anix.at source).
 

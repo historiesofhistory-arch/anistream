@@ -8,6 +8,22 @@ import { logger } from "./lib/logger";
 
 const app: Express = express();
 
+// ── Security headers ──────────────────────────────────────────────────────────
+// Hide server tech, prevent clickjacking, enforce HTTPS, block MIME sniffing.
+// These run BEFORE any route handler so every response gets them.
+app.disable("x-powered-by"); // Never send X-Powered-By: Express
+app.use((req: Request, res: Response, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "SAMEORIGIN");
+  res.setHeader("Referrer-Policy", "no-referrer"); // Never leak referrer to upstream
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  // HSTS only meaningful over HTTPS
+  if (req.headers["x-forwarded-proto"] === "https" || req.protocol === "https") {
+    res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  }
+  next();
+});
+
 app.use(
   pinoHttp({
     logger,

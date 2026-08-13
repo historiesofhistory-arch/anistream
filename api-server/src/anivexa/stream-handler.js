@@ -34,8 +34,8 @@ import { createToken }   from "./core/embed-token-store.js";
  *
  * Instead of encoding the URL as a base64url query parameter (decodable by
  * anyone reading the network tab), we store it server-side under a random
- * opaque token.  The token expires after 4 hours; the Koyeb/FlixCloud domain
- * is never transmitted to the client in any form.
+ * opaque token.  The token expires after 1 hour and rotates every 5 min,
+ * so a token extracted from DevTools has a short shelf-life.
  */
 function buildEmbedProxyUrl(rawUrl) {
   const token = createToken(rawUrl);

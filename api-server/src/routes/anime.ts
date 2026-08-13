@@ -350,7 +350,7 @@ router.get("/anime/search", async (req: Request, res: Response) => {
 // DATA SOURCE — 2-tier fallback:
 //
 //   TIER 1 (OPTIONAL ADDON): SCHEDULE_API_URL env var
-//     If set (e.g., SCHEDULE_API_URL=https://miruro-api-original.onrender.com),
+//     If set (e.g., SCHEDULE_API_URL=https://your-miruro-instance.example.com),
 //     the backend fetches airing data from that REST API instead of AniList
 //     GraphQL. The API must return JSON with results[] where each item has:
 //       { id, title: { english, romaji }, coverImage: { extraLarge },
@@ -540,8 +540,8 @@ const getSchedule = mkSwr<unknown>(30 * 60_000, 15 * 60_000, async (key: string)
   // If Miruro works → source = 'miruro' (primary, AniList fills gaps silently)
   //
   // The site is never affected — if Miruro is down, AniList takes over.
-  const MIRURO_API_BASE = "https://miruro-api-original.onrender.com";
-  const useMiruro = process.env.USE_MIRURO_SCHEDULE === "true";
+  const MIRURO_API_BASE = (process.env.MIRURO_API_URL || "").replace(/\/+$/, "");
+  const useMiruro = process.env.USE_MIRURO_SCHEDULE === "true" && MIRURO_API_BASE.length > 0;
   let source = "anilist";
   const existingKeys = new Set<string>();
 
@@ -1426,8 +1426,16 @@ router.get("/embed-proxy", async (req: Request, res: Response) => {
 
   // @ts-ignore — plain JS module
   const { lookupToken } = await import("../anivexa/core/embed-token-store.js");
-  const target: string | null = lookupToken(token);
-  if (!target) return void res.status(404).send("Not found or expired");
+  // lookupToken returns { url, rotatedToken? } | null.  The rotatedToken is
+  // present when the original token has been in use longer than the rotation
+  // window (5 min) — in that case the old token is invalidated server-side
+  // and a fresh one is returned.  We use the URL from whichever token is
+  // returned; the rotation is invisible to the iframe (the URL is the same).
+  const lookupResult = lookupToken(token);
+  if (!lookupResult || typeof lookupResult !== "object") {
+    return void res.status(404).send("Not found or expired");
+  }
+  const target: string = lookupResult.url;
 
   // ── Server-side preflight ──────────────────────────────────────────────────
   // Fetch the upstream URL ourselves with a short timeout. If this fails,
@@ -1486,23 +1494,21 @@ html,body{width:100%;height:100%;overflow:hidden;background:#06060a;font-family:
       .send(errHtml);
   }
 
-  // ── Happy path: serve the shell with EMBEDDED + OBFUSCATED URL ───────────
-  // The upstream URL is embedded DIRECTLY in the HTML shell but obfuscated
-  // (XOR cipher with the token as key + base64). The client-side JS decodes
-  // it and assigns it to the iframe's src.
+  // ── Happy path: iframe shell with XOR-encrypted URL ────────────────────────
+  // The upstream URL is embedded in the HTML but XOR-encrypted with the
+  // token as key + base64-encoded. The client-side JS decodes it and sets
+  // it as the iframe's src.
   //
-  // This replaces the previous two-step flow (embed-proxy → embed-resolve JSON)
-  // which exposed the Koyeb URL as plain text in the /embed-resolve response —
-  // visible to anyone with DevTools open in the Network tab.
+  // This is the ORIGINAL approach (before the server-side proxy experiment).
+  // The server-side proxy broke the iframe chain — megaplay.buzz detected
+  // it wasn't loading from the Railway API's origin and showed extra ads.
   //
-  // Now the URL NEVER appears as plain text in ANY HTTP response body. The
-  // /embed-resolve endpoint has been removed entirely. The only way to
-  // recover the URL is to reverse-engineer the obfuscation JS — which defeats
-  // automated scraping tools but not a determined human (acceptable trade-off).
-  //
-  // Obfuscation: XOR each char of the URL with the corresponding char of the
-  // token (cycling), then base64-encode the result. The token is already
-  // embedded in the HTML (needed for the loader), so no extra data is exposed.
+  // With this approach:
+  //   1. iframe loads the Railway API page DIRECTLY (proper referer chain)
+  //   2. Railway API's page has its own iframe to megaplay.buzz
+  //   3. megaplay.buzz sees the Railway API as origin → no extra ads
+  //   4. The upstream URL is XOR-encrypted in the HTML (not plain text)
+  //   5. Security headers still apply (X-Powered-By hidden, etc.)
 
   // XOR + base64 obfuscation
   function obfuscateUrl(url: string, key: string): string {
@@ -1517,8 +1523,6 @@ html,body{width:100%;height:100%;overflow:hidden;background:#06060a;font-family:
 
   const obfuscatedUrl = obfuscateUrl(target, token);
 
-  // NO SPINNER: The shell shows a pure black background while the iframe
-  // loads. The React watch page renders its OWN logo overlay on top.
   const shellHtml = `<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <style>
@@ -1538,7 +1542,6 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000;font-family:sys
   var key="${token}";
   var enc="${obfuscatedUrl}";
 
-  // Decode: base64 → XOR with key → UTF-8 string
   try {
     var raw=atob(enc);
     var urlBytes=new Uint8Array(raw.length);
@@ -1557,7 +1560,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000;font-family:sys
       setTimeout(function(){ ld.style.display='none'; }, 320);
     };
   } catch(e){
-    // Decode failed — leave black screen, React watchdog handles errors
+    // Decode failed — leave black screen
   }
 })();
 </script>

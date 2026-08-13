@@ -47,3 +47,26 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Env files (keep .env.example public, ignore actual .env files)
+.env
+.env.local
+.env.production
+.env.*.local
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# Build artifacts (extra safety net beyond dist/)
+anistream/dist
+api-server/dist
+lib/dist
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
