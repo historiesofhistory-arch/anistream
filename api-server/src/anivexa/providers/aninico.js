@@ -9,11 +9,12 @@
 // Endpoint: GET {EMBED_API_URL}/api/stream/anix.at/{anilistId}/{epNum}/{type}?p=am
 // type: "sub" | "dub" | "hsub"
 //
-// EMBED_API_URL MUST be set in your environment variables.
+// EMBED_API_URL is read from env (defaults to the public Koyeb instance).
+// Set it in your environment to point at your own hosted instance.
 
 import { json } from "../core/new-provider-utils.js";
 
-const EMBED_API_URL = (process.env.EMBED_API_URL || "")
+const EMBED_API_URL = (process.env.EMBED_API_URL || "https://worthwhile-audrey-botnestbots-d45e9faf.koyeb.app")
   .replace(/\/+$/, "");
 
 // ── Availability probe ─────────────────────────────────────────────────────

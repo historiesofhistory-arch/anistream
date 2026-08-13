@@ -540,8 +540,8 @@ const getSchedule = mkSwr<unknown>(30 * 60_000, 15 * 60_000, async (key: string)
   // If Miruro works → source = 'miruro' (primary, AniList fills gaps silently)
   //
   // The site is never affected — if Miruro is down, AniList takes over.
-  const MIRURO_API_BASE = (process.env.MIRURO_API_URL || "").replace(/\/+$/, "");
-  const useMiruro = process.env.USE_MIRURO_SCHEDULE === "true" && MIRURO_API_BASE.length > 0;
+  const MIRURO_API_BASE = (process.env.MIRURO_API_URL || "https://miruro-api-original.onrender.com").replace(/\/+$/, "");
+  const useMiruro = process.env.USE_MIRURO_SCHEDULE === "true";
   let source = "anilist";
   const existingKeys = new Set<string>();
 
@@ -1426,16 +1426,8 @@ router.get("/embed-proxy", async (req: Request, res: Response) => {
 
   // @ts-ignore — plain JS module
   const { lookupToken } = await import("../anivexa/core/embed-token-store.js");
-  // lookupToken returns { url, rotatedToken? } | null.  The rotatedToken is
-  // present when the original token has been in use longer than the rotation
-  // window (5 min) — in that case the old token is invalidated server-side
-  // and a fresh one is returned.  We use the URL from whichever token is
-  // returned; the rotation is invisible to the iframe (the URL is the same).
-  const lookupResult = lookupToken(token);
-  if (!lookupResult || typeof lookupResult !== "object") {
-    return void res.status(404).send("Not found or expired");
-  }
-  const target: string = lookupResult.url;
+  const target: string | null = lookupToken(token);
+  if (!target) return void res.status(404).send("Not found or expired");
 
   // ── Server-side preflight ──────────────────────────────────────────────────
   // Fetch the upstream URL ourselves with a short timeout. If this fails,

@@ -1,23 +1,18 @@
-// Core provider — embed server (configured via EMBED_API_URL env var).
+// Core provider — embed server (Koyeb-hosted by default, configurable).
 // Supports sub, dub, and hsub (hard-subtitled).
 // Marked as the recommended default for AniStream.
 //
 // URL: GET {EMBED_API_URL}/api/stream/anix.at/{anilistId}/{epNum}/{type}/co
 // type: "sub" | "dub" | "hsub"
 //
-// The embed API origin MUST be set via the EMBED_API_URL env var.
-// Host your own instance (Koyeb / Railway / Render / custom domain) and
-// set its origin in your environment variables.
+// The embed API origin is read from the EMBED_API_URL env var. If unset,
+// falls back to the public Koyeb-hosted instance. Set EMBED_API_URL in your
+// environment to point at your own hosted instance.
 
 import { json } from "../core/new-provider-utils.js";
 
-const EMBED_API_URL = (process.env.EMBED_API_URL || "")
+const EMBED_API_URL = (process.env.EMBED_API_URL || "https://worthwhile-audrey-botnestbots-d45e9faf.koyeb.app")
   .replace(/\/+$/, ""); // strip trailing slash(es)
-
-if (!EMBED_API_URL) {
-  console.warn("[core] EMBED_API_URL is not set — Core provider will be disabled. " +
-    "Set it in your environment variables to your hosted embed API.");
-}
 
 // ── Availability probe ─────────────────────────────────────────────────────
 // Koyeb always returns HTTP 200, but unavailable streams return a short
