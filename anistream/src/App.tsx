@@ -111,36 +111,29 @@ function Router() {
   // We ALSO keep the existing `onExitComplete` scroll-to-0 hook so the new
   // page mounts at scrollTop=0 (in the gap between old-page-unmount and
   // new-page-mount that `mode="wait"` provides).
-  // ONLY blur the input — do NOT scroll to 0 here.
-  // With mode="sync" + slide transition, resetting scroll BEFORE the old
-  // page exits causes the old page to visually jump up (scrollY: 300→0)
-  // while it's still visible. That's the "going upside" glitch.
-  //
-  // Instead, the old page becomes position:absolute (from pageVariants.exit)
-  // which removes it from the document flow. The window scroll naturally
-  // resets to 0 because the absolute element doesn't contribute to scroll
-  // height. The new page starts at 0 without any manual reset.
-  //
-  // Scroll to 0 AFTER the transition completes (in onExitComplete or a 
-  // small timeout) as a safety net — but don't do it before paint.
+  // ONLY blur the input. Do NOT reset scroll here at all.
+  // The old page keeps its scroll position — it becomes position:absolute
+  // (from pageVariants.exit) so it floats in place without moving.
+  // The new page mounts fresh at scrollY=0.
+  // Scroll is reset in onExitComplete AFTER the old page animation finishes.
   useLayoutEffect(() => {
     const active = document.activeElement;
     if (active && active instanceof HTMLElement && active.tagName === 'INPUT') {
       active.blur();
     }
-    // Delayed scroll reset — fires AFTER the old page has become absolute
-    // and the new page has started sliding in. By this point the user
-    // is looking at the new page, not the old one.
-    const t = setTimeout(() => {
-      window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior });
-    }, 50);
-    return () => clearTimeout(t);
   }, [key]);
 
   return (
     <Layout>
       <NavProgress />
-      <AnimatePresence initial={false}>
+      <AnimatePresence
+        initial={false}
+        onExitComplete={() => {
+          // Old page is fully gone now. Reset scroll to 0 so the new page
+          // (already mounted and visible) is at the top.
+          window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior });
+        }}
+      >
         <motion.div
           key={key}
           variants={pageVariants}
