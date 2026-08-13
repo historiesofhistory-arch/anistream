@@ -74,24 +74,17 @@ export function RowSlider({ title, badge, icon, children, className }: RowSlider
       </div>
 
       {/* Scrollable row */}
-      <div className="relative">
-        <div
-          ref={scrollRef}
-          onScroll={updateScrollState}
-          className="flex gap-3 overflow-x-auto no-scrollbar pb-1 -mx-1 px-1"
-          style={{ scrollSnapType: "x proximity" }}
-        >
-          {children}
-        </div>
-
-        {/* Fade edges */}
-        {canScrollLeft && (
-          <div className="absolute left-0 top-0 bottom-1 w-10 bg-gradient-to-r from-background to-transparent pointer-events-none z-10" />
-        )}
-        {canScrollRight && (
-          <div className="absolute right-0 top-0 bottom-1 w-10 bg-gradient-to-l from-background to-transparent pointer-events-none z-10" />
-        )}
+      <div
+        ref={scrollRef}
+        onScroll={updateScrollState}
+        className="flex gap-3 overflow-x-auto no-scrollbar pb-1 -mx-1 px-1"
+        style={{ scrollSnapType: "x proximity" }}
+      >
+        {children}
       </div>
+
+      {/* No fade edges — user requested clean, sharp edges instead of the
+          glassy/blur gradient overlays that were here before. */}
     </div>
   );
 }

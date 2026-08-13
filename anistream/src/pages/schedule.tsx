@@ -338,7 +338,7 @@ export function Schedule() {
       </motion.header>
 
       {/* ── Day selector — horizontal scroll, fits viewport exactly ── */}
-      <div className="sticky top-14 z-30 bg-background/95 backdrop-blur-xl border-b border-white/[0.06]">
+      <div className="sticky top-14 z-30 bg-background border-b border-white/[0.06]">
         <div className="max-w-screen-xl mx-auto px-4 sm:px-6 py-3">
           {/* overflow-x-auto with NO negative margin — the parent already has
               px-4 / sm:px-6, so pills scroll within the safe content area and

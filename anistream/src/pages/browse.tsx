@@ -4,6 +4,8 @@ import { Search, SlidersHorizontal, X, ChevronDown, Star, Tv2, Film } from "luci
 import { useQuery } from "@tanstack/react-query";
 import { cn } from "../lib/utils";
 import { apiUrl } from "../lib/api";
+import { motion } from "framer-motion";
+import { staggerContainer, staggerChild } from "../lib/transitions";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 interface BrowseItem {
@@ -116,45 +118,47 @@ function FilterChip({
 function BrowseCard({ item }: { item: BrowseItem }) {
   const [, setLocation] = useLocation();
   return (
-    <button
-      onClick={() => setLocation(`/anime/${item.id}`)}
-      className="tap-scale group text-left w-full flex flex-col gap-1.5"
-    >
-      <div className="w-full aspect-[2/3] overflow-hidden rounded-xl border border-white/[0.06] bg-secondary relative">
-        <img
-          src={item.posterUrl} alt={item.title}
-          loading="lazy"
-          className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-        />
-        {/* Rating badge */}
-        {item.rating != null && (
-          <div className="absolute top-1.5 right-1.5 flex items-center gap-0.5 bg-black/70 backdrop-blur-sm px-1.5 py-0.5 rounded-lg">
-            <Star className="w-2.5 h-2.5 fill-yellow-400 text-yellow-400" />
-            <span className="text-[9px] font-bold text-white/90">{item.rating.toFixed(1)}</span>
-          </div>
-        )}
-        {/* Hover play */}
-        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-          <div className="w-9 h-9 rounded-full bg-primary/90 flex items-center justify-center">
-            <svg className="w-4 h-4 fill-white translate-x-0.5" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-          </div>
-        </div>
-      </div>
-      <div>
-        <p className="text-[11px] font-semibold text-white/80 group-hover:text-white transition-colors leading-snug line-clamp-2">
-          {item.title}
-        </p>
-        <div className="flex items-center gap-1.5 mt-0.5">
-          {item.type && (
-            <span className="flex items-center gap-0.5 text-[10px] text-white/30">
-              {item.type === "MOVIE" ? <Film className="w-2.5 h-2.5" /> : <Tv2 className="w-2.5 h-2.5" />}
-              {item.type === "TV" ? "TV" : item.type === "MOVIE" ? "Movie" : item.type}
-            </span>
+    <motion.div variants={staggerChild}>
+      <button
+        onClick={() => setLocation(`/anime/${item.id}`)}
+        className="tap-scale group text-left w-full flex flex-col gap-1.5"
+      >
+        <div className="w-full aspect-[2/3] overflow-hidden rounded-xl border border-white/[0.06] bg-secondary relative">
+          <img
+            src={item.posterUrl} alt={item.title}
+            loading="lazy"
+            className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+          />
+          {/* Rating badge — no backdrop-blur (user doesn't like glassy effects) */}
+          {item.rating != null && (
+            <div className="absolute top-1.5 right-1.5 flex items-center gap-0.5 bg-black/80 px-1.5 py-0.5 rounded-lg border border-white/10">
+              <Star className="w-2.5 h-2.5 fill-yellow-400 text-yellow-400" />
+              <span className="text-[9px] font-bold text-white/90">{item.rating.toFixed(1)}</span>
+            </div>
           )}
-          {item.year && <span className="text-[10px] text-white/25">{item.year}</span>}
+          {/* Hover play */}
+          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+            <div className="w-9 h-9 rounded-full bg-primary/90 flex items-center justify-center">
+              <svg className="w-4 h-4 fill-white translate-x-0.5" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+            </div>
+          </div>
         </div>
-      </div>
-    </button>
+        <div>
+          <p className="text-[11px] font-semibold text-white/80 group-hover:text-white transition-colors leading-snug line-clamp-2">
+            {item.title}
+          </p>
+          <div className="flex items-center gap-1.5 mt-0.5">
+            {item.type && (
+              <span className="flex items-center gap-0.5 text-[10px] text-white/30">
+                {item.type === "MOVIE" ? <Film className="w-2.5 h-2.5" /> : <Tv2 className="w-2.5 h-2.5" />}
+                {item.type === "TV" ? "TV" : item.type === "MOVIE" ? "Movie" : item.type}
+              </span>
+            )}
+            {item.year && <span className="text-[10px] text-white/25">{item.year}</span>}
+          </div>
+        </div>
+      </button>
+    </motion.div>
   );
 }
 
@@ -324,13 +328,18 @@ export function Browse() {
       )}
 
       {/* ── Grid ── */}
-      <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3">
+      <motion.div
+        variants={staggerContainer}
+        initial="hidden"
+        animate="visible"
+        className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3"
+      >
         {showingLoading
           ? <GridSkeleton count={18} />
           : allItems.map(item => <BrowseCard key={item.id} item={item} />)
         }
         {isFetching && filters.page > 1 && <GridSkeleton count={6} />}
-      </div>
+      </motion.div>
 
       {/* ── Empty ── */}
       {!isFetching && allItems.length === 0 && (
