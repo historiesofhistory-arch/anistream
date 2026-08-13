@@ -511,35 +511,35 @@ const getSchedule = mkSwr<unknown>(30 * 60_000, 15 * 60_000, async (key: string)
     });
   }
 
-  // ── TIER 1 (OPTIONAL ADDON): SCHEDULE_API_URL ────────────────────────────
-  // If the env var is set, try fetching from the addon API first.
-  // The API returns a flat list of airing anime (sorted by airingAt).
-  // We filter to only those airing within our week range [s, e].
-  const scheduleApiUrl = process.env.SCHEDULE_API_URL?.replace(/\/+$/, "");
+  // ── TIER 1 (OPTIONAL): Miruro API — upcoming episodes ────────────────────
+  // If USE_MIRURO_SCHEDULE=true, fetch UPCOMING episodes from the Miruro
+  // render.com API first. This API only returns nextAiringEpisode (upcoming),
+  // so we ALSO fetch from AniList for PAST episodes in the same week and
+  // merge them (deduplicating by animeId+episode).
+  //
+  // If Miruro fails, we fall back to AniList for everything.
+  const MIRURO_API_BASE = "https://miruro-api-original.onrender.com";
+  const useMiruro = process.env.USE_MIRURO_SCHEDULE === "true";
   let source = "anilist";
+  const miruroKeys = new Set<string>();
 
-  if (scheduleApiUrl) {
+  if (useMiruro) {
     try {
-      // Fetch all pages that might contain items in our week range.
-      // The API returns 20 items per page sorted by airingAt (soonest first).
-      // We fetch pages until we find items outside our week range.
       let page = 1;
-      let foundInWeek = false;
       let pastWeek = false;
 
-      while (!pastWeek && page <= 10) {
-        const res = await fetch(`${scheduleApiUrl}/schedule?page=${page}`, {
+      while (!pastWeek && page <= 15) {
+        const res = await fetch(`${MIRURO_API_BASE}/schedule?page=${page}`, {
           headers: { "User-Agent": UA, "Accept": "application/json" },
           signal: AbortSignal.timeout(8000),
         });
-        if (!res.ok) throw new Error(`addon HTTP ${res.status}`);
+        if (!res.ok) throw new Error(`miruro HTTP ${res.status}`);
         const json = await res.json() as {
           results?: Array<{
             id: number;
             title: { english?: string | null; romaji?: string | null };
             coverImage: { extraLarge?: string | null; large?: string | null };
             nextAiringEpisode?: { episode: number; airingAt: number; timeUntilAiring: number } | null;
-            airingAt?: number;
           }>;
           hasNextPage?: boolean;
         };
@@ -548,18 +548,19 @@ const getSchedule = mkSwr<unknown>(30 * 60_000, 15 * 60_000, async (key: string)
         for (const item of json.results) {
           const na = item.nextAiringEpisode;
           if (!na || !na.airingAt) continue;
-          // airingAt is in seconds
           if (na.airingAt >= s && na.airingAt <= e) {
-            foundInWeek = true;
-            addScheduleItem(
-              item.id,
-              item.title.english ?? item.title.romaji ?? "Unknown",
-              item.coverImage.extraLarge ?? item.coverImage.large ?? "",
-              na.episode,
-              na.airingAt,
-            );
+            const key = `${item.id}-${na.episode}`;
+            if (!miruroKeys.has(key)) {
+              miruroKeys.add(key);
+              addScheduleItem(
+                item.id,
+                item.title.english ?? item.title.romaji ?? "Unknown",
+                item.coverImage.extraLarge ?? item.coverImage.large ?? "",
+                na.episode,
+                na.airingAt,
+              );
+            }
           } else if (na.airingAt > e) {
-            // Past our week range — stop fetching more pages
             pastWeek = true;
             break;
           }
@@ -569,23 +570,27 @@ const getSchedule = mkSwr<unknown>(30 * 60_000, 15 * 60_000, async (key: string)
         page++;
       }
 
-      if (foundInWeek) {
-        source = "addon";
-      } else {
-        // Addon returned data but nothing in our week — fall back to AniList
-        throw new Error("addon returned no items in week range");
+      if (miruroKeys.size > 0) {
+        source = "miruro+anilist";
       }
     } catch {
-      // Addon failed — silently fall back to AniList
+      // Miruro failed — fall back to AniList for everything
       source = "anilist";
     }
   }
 
-  // ── TIER 2 (DEFAULT FALLBACK): AniList GraphQL ──────────────────────────
-  if (source === "anilist") {
+  // ── TIER 2: AniList GraphQL — always fetched ─────────────────────────────
+  // When USE_MIRURO_SCHEDULE=true: AniList fills in PAST episodes that Miruro
+  //   doesn't have (Miruro only has upcoming nextAiringEpisode).
+  // When USE_MIRURO_SCHEDULE=false: AniList provides ALL episodes (past + upcoming).
+  // Deduplicate: skip items already added by Miruro.
+  {
     const d = await alQuery<{ Page: { airingSchedules: AiringEntry[] } }>(SCHED_Q, { s, e });
     for (const a of d.Page.airingSchedules) {
-      addScheduleItem(a.media.id, title(a.media), cover(a.media), a.episode, a.airingAt);
+      const key = `${a.media.id}-${a.episode}`;
+      if (!miruroKeys.has(key)) {
+        addScheduleItem(a.media.id, title(a.media), cover(a.media), a.episode, a.airingAt);
+      }
     }
   }
 
