@@ -28,38 +28,35 @@ function routeKey(path: string): string {
 }
 
 // ── Top progress bar ──────────────────────────────────────────────────────────
+// Shows a thin red bar at the top during page transitions.
+// Timed to match the page transition (0.3s) — appears instantly, fills
+// quickly, then disappears. No long 2s wait like before.
 function NavProgress() {
   const [location] = useLocation();
-  const [phase, setPhase] = useState<'idle' | 'running' | 'done'>('running');
+  const [visible, setVisible] = useState(false);
   const prevRef = useRef(location);
-  const doneTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const bootTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Show on initial load
   useEffect(() => {
-    bootTimer.current = setTimeout(() => {
-      setPhase('done');
-      window.setTimeout(() => setPhase('idle'), 400);
-    }, 1000);
-    return () => { if (bootTimer.current) clearTimeout(bootTimer.current); };
+    setVisible(true);
+    hideTimer.current = setTimeout(() => setVisible(false), 600);
+    return () => { if (hideTimer.current) clearTimeout(hideTimer.current); };
   }, []);
 
+  // Show on route change
   useEffect(() => {
     const key = routeKey(location);
     if (key === routeKey(prevRef.current)) return;
     prevRef.current = location;
-    if (doneTimer.current) clearTimeout(doneTimer.current);
-    setPhase('idle');
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      setPhase('running');
-      doneTimer.current = setTimeout(() => {
-        setPhase('done');
-        window.setTimeout(() => setPhase('idle'), 400);
-      }, 2000);
-    }));
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+    setVisible(true);
+    // Hide after the transition completes (0.2s cross-fade + small buffer)
+    hideTimer.current = setTimeout(() => setVisible(false), 500);
   }, [location]);
 
-  if (phase === 'idle') return null;
-  return <div className={`nav-progress ${phase === 'running' ? 'nav-progress-running' : 'nav-progress-done'}`} />;
+  if (!visible) return null;
+  return <div className="nav-progress-active" />;
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────

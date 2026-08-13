@@ -13,7 +13,7 @@
 import type { Variants, Transition } from "framer-motion";
 
 export const pageTransitionSpring: Transition = {
-  duration: 0.2,
+  duration: 0.25,
   ease: [0.4, 0, 0.2, 1],
 };
 
