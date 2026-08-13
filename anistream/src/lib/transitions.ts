@@ -1,15 +1,14 @@
 // shared/transition-variants.ts
 // Centralized framer-motion variants — single source of truth for the whole site.
-// Goal: SMOOTH + POLISHED. No "collapsing", no "crash", no jhataka.
+// Goal: SMOOTH + POLISHED. No "jhalak" of old page, no scroll jump.
 //
-// Strategy: CROSS-FADE using mode="sync" (both pages visible simultaneously).
-// - Old page fades out while new page fades in AT THE SAME TIME
-// - No gap/blank state between exit and enter
-// - Old page gets position:absolute so it doesn't push new page down
-// - Scroll resets to 0 instantly in useLayoutEffect (before paint)
-//
-// This is how Netflix, Crunchyroll, etc. do page transitions — clean
-// cross-fade with no visible gap.
+// Strategy: CROSS-FADE with position:absolute on the exiting page.
+// - Old page gets position:absolute so it "floats" and doesn't affect scroll
+// - Old page fades out (0.2s) while new page fades in (0.2s) simultaneously
+// - New page starts at scrollY=0 naturally (fresh mount)
+// - NO useLayoutEffect scroll reset — the old page's scroll doesn't matter
+//   because it's position:absolute (taken out of flow)
+// - No gap, no blank state, no jhalak
 
 import type { Variants, Transition } from "framer-motion";
 
@@ -26,10 +25,16 @@ export const pageVariants: Variants = {
     opacity: 1,
     transition: pageTransitionSpring,
   },
-  // EXIT: Same duration as enter (0.2s) for a symmetric cross-fade.
-  // The old page fades out WHILE the new page fades in — no gap.
+  // EXIT: position:absolute takes the old page OUT of the document flow.
+  // This means the old page's scroll position doesn't affect the new page.
+  // The old page "floats" on top and fades out — the user never sees it
+  // scroll up or jump. Combined with opacity fade = clean cross-fade.
   exit: {
     opacity: 0,
+    position: "absolute" as const,
+    top: 0,
+    left: 0,
+    right: 0,
     transition: { duration: 0.2, ease: [0.4, 0, 0.2, 1] },
   },
 };
