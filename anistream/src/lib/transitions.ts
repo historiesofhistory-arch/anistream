@@ -1,51 +1,50 @@
 // shared/transition-variants.ts
 // Centralized framer-motion variants — single source of truth for the whole site.
-// Goal: BUTTERY SMOOTH + SQUISHY. Feels alive, not robotic.
+// Goal: BUTTERY SMOOTH slide transition. New page slides in from right,
+// old page stays in place underneath. Like iOS/Android native navigation.
 //
-// Page transitions use spring physics for a natural "settle" feel.
-// Tap/hover effects use soft springs with mild overshoot.
+// Strategy: mode="sync" — both pages render simultaneously.
+//   - OLD page: stays in place (position absolute, opacity fades to 0)
+//   - NEW page: slides in from right (x: 100% → 0) with spring physics
+//   - Old page is position:absolute so it doesn't push new page
+//   - Scroll resets to 0 in useLayoutEffect before paint
 
 import type { Variants, Transition } from "framer-motion";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PAGE TRANSITIONS — buttery smooth crossfade
-// ─────────────────────────────────────────────────────────────────────────────
-// Uses a spring with moderate stiffness and damping — feels like a native
-// iOS app navigation. Not too fast (feels cheap), not too slow (feels sluggish).
-// The spring gives it a subtle "alive" quality that a linear tween can't.
-
 export const pageTransitionSpring: Transition = {
   type: "spring",
-  stiffness: 200,
-  damping: 26,
-  mass: 1,
+  stiffness: 260,
+  damping: 28,
+  mass: 0.9,
 };
 
 export const pageVariants: Variants = {
+  // New page enters from the RIGHT — slides in over the old page
   initial: {
     opacity: 0,
+    x: "100%",
   },
   animate: {
     opacity: 1,
+    x: 0,
     transition: pageTransitionSpring,
   },
+  // Old page: position absolute (floats underneath), fades out slightly.
+  // Stays in place — no movement, just opacity fade so the new page
+  // slides cleanly over it.
   exit: {
     opacity: 0,
-    transition: {
-      duration: 0.15,
-      ease: [0.4, 0, 0.2, 1],
-    },
+    position: "absolute" as const,
+    top: 0,
+    left: 0,
+    right: 0,
+    transition: { duration: 0.3, ease: [0.4, 0, 0.2, 1] },
   },
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SQUISHY — used by cards, buttons, list items, anything "tappable"
+// SQUISHY — soft press + bouncy release
 // ─────────────────────────────────────────────────────────────────────────────
-// whileTap = soft squish (scale down to 0.94 with a gentle spring)
-// whileHover = subtle scale up (1.04x) with a soft spring — no y-offset
-// The springs have mild overshoot (damping < stiffness ratio) so it feels
-// "alive" — like pressing a soft button that bounces back.
-
 export const squishyTap = {
   scale: 0.94,
   transition: { type: "spring" as const, stiffness: 400, damping: 17, mass: 0.6 },
@@ -56,7 +55,7 @@ export const squishyHover = {
   transition: { type: "spring" as const, stiffness: 300, damping: 20, mass: 0.7 },
 };
 
-// Stagger container — cards pop in one-by-one with a bouncy feel
+// Stagger container
 export const staggerContainer: Variants = {
   hidden: { opacity: 0 },
   visible: {
@@ -72,7 +71,7 @@ export const staggerContainer: Variants = {
   },
 };
 
-// Stagger child — soft fade + gentle slide up with spring
+// Stagger child
 export const staggerChild: Variants = {
   hidden: {
     opacity: 0,
@@ -95,7 +94,7 @@ export const staggerChild: Variants = {
   },
 };
 
-// Modal/sheet variants — bouncy sheet from bottom
+// Modal/sheet
 export const sheetUp: Variants = {
   hidden: { y: "100%", opacity: 0.6 },
   visible: {
