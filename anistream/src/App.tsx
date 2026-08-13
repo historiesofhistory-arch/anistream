@@ -27,6 +27,22 @@ function routeKey(path: string): string {
   return `/${parts[0]}`;
 }
 
+// ── ScrollResetter ──────────────────────────────────────────────────────────
+// Invisible component that resets window scroll to 0 when it mounts.
+// Placed INSIDE each page's motion.div, so it mounts together with the new
+// page content. useLayoutEffect fires synchronously after DOM commit but
+// BEFORE paint — so the user never sees the new page at the old scroll position.
+//
+// The old (exiting) page is position:absolute (from pageVariants.exit), so
+// it doesn't contribute to the document's scroll height. Resetting scroll
+// to 0 only affects the new page — the old page stays exactly where it was.
+function ScrollResetter() {
+  useLayoutEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior });
+  }, []);
+  return null;
+}
+
 // ── Top progress bar ──────────────────────────────────────────────────────────
 // Shows a thin red bar at the top during page transitions.
 // Timed to match the page transition (0.3s) — appears instantly, fills
@@ -111,11 +127,9 @@ function Router() {
   // We ALSO keep the existing `onExitComplete` scroll-to-0 hook so the new
   // page mounts at scrollTop=0 (in the gap between old-page-unmount and
   // new-page-mount that `mode="wait"` provides).
-  // ONLY blur the input. Do NOT reset scroll here at all.
-  // The old page keeps its scroll position — it becomes position:absolute
-  // (from pageVariants.exit) so it floats in place without moving.
-  // The new page mounts fresh at scrollY=0.
-  // Scroll is reset in onExitComplete AFTER the old page animation finishes.
+  // Blur input on route change. Do NOT reset scroll here.
+  // Scroll is reset in the new page's useEffect (see PageWrapper below)
+  // which fires AFTER the new page has mounted but BEFORE the user sees it.
   useLayoutEffect(() => {
     const active = document.activeElement;
     if (active && active instanceof HTMLElement && active.tagName === 'INPUT') {
@@ -128,11 +142,6 @@ function Router() {
       <NavProgress />
       <AnimatePresence
         initial={false}
-        onExitComplete={() => {
-          // Old page is fully gone now. Reset scroll to 0 so the new page
-          // (already mounted and visible) is at the top.
-          window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior });
-        }}
       >
         <motion.div
           key={key}
@@ -140,8 +149,15 @@ function Router() {
           initial="initial"
           animate="animate"
           exit="exit"
-          style={{ willChange: 'opacity' }}
+          style={{ willChange: 'transform, opacity' }}
         >
+          {/* ScrollResetter: invisible component that resets scroll to 0
+              the moment this page mounts. Fires synchronously in useLayoutEffect
+              AFTER the new page's DOM is committed but BEFORE paint.
+              The old page is position:absolute (from exit variant) so it
+              doesn't contribute to scroll height — resetting to 0 only
+              affects the new page. */}
+          <ScrollResetter />
           <Switch location={location}>
             <Route path="/" component={Home} />
             <Route path="/anime/:animeId" component={Details} />
