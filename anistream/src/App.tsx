@@ -27,47 +27,26 @@ function routeKey(path: string): string {
   return `/${parts[0]}`;
 }
 
-// ── ScrollResetter ──────────────────────────────────────────────────────────
-// Invisible component that resets window scroll to 0 when it mounts.
-// Placed INSIDE each page's motion.div, so it mounts together with the new
-// page content. useLayoutEffect fires synchronously after DOM commit but
-// BEFORE paint — so the user never sees the new page at the old scroll position.
-//
-// The old (exiting) page is position:absolute (from pageVariants.exit), so
-// it doesn't contribute to the document's scroll height. Resetting scroll
-// to 0 only affects the new page — the old page stays exactly where it was.
-function ScrollResetter() {
-  useLayoutEffect(() => {
-    window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior });
-  }, []);
-  return null;
-}
-
-// ── Top progress bar ──────────────────────────────────────────────────────────
-// Shows a thin red bar at the top during page transitions.
-// Timed to match the page transition (0.3s) — appears instantly, fills
-// quickly, then disappears. No long 2s wait like before.
+// ── NavProgress ──────────────────────────────────────────────────────────────
+// Thin bar at top during transitions. Simple, fast, non-blocking.
 function NavProgress() {
   const [location] = useLocation();
   const [visible, setVisible] = useState(false);
   const prevRef = useRef(location);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Show on initial load
   useEffect(() => {
     setVisible(true);
     hideTimer.current = setTimeout(() => setVisible(false), 600);
     return () => { if (hideTimer.current) clearTimeout(hideTimer.current); };
   }, []);
 
-  // Show on route change
   useEffect(() => {
     const key = routeKey(location);
     if (key === routeKey(prevRef.current)) return;
     prevRef.current = location;
     if (hideTimer.current) clearTimeout(hideTimer.current);
     setVisible(true);
-    // Hide after the transition completes (0.2s cross-fade + small buffer)
     hideTimer.current = setTimeout(() => setVisible(false), 500);
   }, [location]);
 
@@ -75,61 +54,31 @@ function NavProgress() {
   return <div className="nav-progress-active" />;
 }
 
-// ── Router ────────────────────────────────────────────────────────────────────
-// Key behaviour decisions for SMOOTH + SQUISHY page transitions:
+// ── Router ───────────────────────────────────────────────────────────────────
+// ARCHITECTURE: mode="wait" with instant exit.
 //
-// 1. AnimatePresence mode="wait" — old page exits fully BEFORE new page enters.
-//    This avoids overlap glitches and double-scrollbar issues on mobile.
-//    Combined with a fast exit (spring 380/32/0.7), the perceived duration is
-//    short enough to feel instant but smooth — like a native mobile app.
+// Why mode="wait":
+//   - Only ONE page is in the DOM at any time → no double-render lag
+//   - Old page exits (instant 0ms) → DOM is clean → new page mounts → slides in
+//   - On mobile, rendering two full pages simultaneously causes jank/freeze
 //
-// 2. Scroll restoration is HANDLED MANUALLY via history.scrollRestoration='manual'
-//    (set in main.tsx) + a synchronous window.scrollTo(0,0) right when the
-//    location changes (in the same commit cycle, before the new page mounts).
-//    This prevents the "scroll jump" glitch where the old page's scroll position
-//    briefly leaks into the new page during the exit animation.
+// Why instant exit (0ms):
+//   - A slow exit (0.3s fade) keeps the old page visible at its scroll position
+//     while the new page also tries to render → scroll conflict → jump
+//   - Instant exit: old page gone → scroll free to reset → new page slides in
 //
-// 3. The motion.div has `position: relative` so the old page's exit animation
-//    doesn't cause layout shift on the new page. We're using `wait` mode so the
-//    old page is fully unmounted before the new one mounts — no absolute
-//    positioning needed.
+// Scroll handling:
+//   1. useLayoutEffect: blur active input (prevents mobile scroll-into-view)
+//   2. onExitComplete: fires after old page is fully removed → scrollTo(0,0)
+//   3. New page mounts at scrollY=0 naturally
 //
-// 4. `willChange: 'transform, opacity, filter'` ensures the GPU compositor
-//    handles the spring animation at 60fps even on mid-range mobile devices.
-
+// This works on ALL transitions: home→details, search→details, details→watch, etc.
 function Router() {
   const [location] = useLocation();
   const key = routeKey(location);
 
-  // ⚠️ SCROLL-RESTORATION + NO-SCROLL-JUMP STRATEGY — IMPORTANT
-  //
-  // PROBLEM the user reported:
-  //   When navigating from search (scrolled down) → watch/details, the page
-  //   "slightly goes up and then transitions" — a visible scroll-up glitch
-  //   BEFORE the new page mounts.
-  //
-  // ROOT CAUSE:
-  //   The search page auto-focuses its input on mount. When the user scrolls
-  //   down to browse results, the input is left above the fold. The moment
-  //   they click an anime card, the URL changes — but the input is STILL
-  //   focused. Some browsers (especially mobile Safari + Chrome) will try
-  //   to scroll the focused element back into view as a side-effect of the
-  //   upcoming navigation, causing the visible "scroll up" before the
-  //   framer-motion exit animation kicks in.
-  //
-  // FIX (this useLayoutEffect):
-  //   The instant the route key changes — BEFORE the browser paints — we
-  //   blur the active element. This removes the focus target, so the
-  //   browser has nothing to scroll into view during the transition.
-  //   useLayoutEffect runs synchronously after DOM mutation but before
-  //   paint, so the blur lands before any scroll-side-effect can fire.
-  //
-  // We ALSO keep the existing `onExitComplete` scroll-to-0 hook so the new
-  // page mounts at scrollTop=0 (in the gap between old-page-unmount and
-  // new-page-mount that `mode="wait"` provides).
-  // Blur input on route change. Do NOT reset scroll here.
-  // Scroll is reset in the new page's useEffect (see PageWrapper below)
-  // which fires AFTER the new page has mounted but BEFORE the user sees it.
+  // Blur active input on route change — prevents mobile browsers from
+  // scrolling the focused element back into view during navigation.
   useLayoutEffect(() => {
     const active = document.activeElement;
     if (active && active instanceof HTMLElement && active.tagName === 'INPUT') {
@@ -141,7 +90,13 @@ function Router() {
     <Layout>
       <NavProgress />
       <AnimatePresence
+        mode="wait"
         initial={false}
+        onExitComplete={() => {
+          // Old page is fully removed from DOM. Reset scroll to 0.
+          // The new page (about to mount) will start at scrollY=0.
+          window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior });
+        }}
       >
         <motion.div
           key={key}
@@ -151,13 +106,6 @@ function Router() {
           exit="exit"
           style={{ willChange: 'transform, opacity' }}
         >
-          {/* ScrollResetter: invisible component that resets scroll to 0
-              the moment this page mounts. Fires synchronously in useLayoutEffect
-              AFTER the new page's DOM is committed but BEFORE paint.
-              The old page is position:absolute (from exit variant) so it
-              doesn't contribute to scroll height — resetting to 0 only
-              affects the new page. */}
-          <ScrollResetter />
           <Switch location={location}>
             <Route path="/" component={Home} />
             <Route path="/anime/:animeId" component={Details} />

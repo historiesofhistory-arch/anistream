@@ -1,13 +1,28 @@
 // shared/transition-variants.ts
 // Centralized framer-motion variants — single source of truth for the whole site.
-// Goal: BUTTERY SMOOTH slide transition. New page slides in from right,
-// old page stays in place underneath. Like iOS/Android native navigation.
 //
-// Strategy: mode="sync" — both pages render simultaneously.
-//   - OLD page: stays in place (position absolute, opacity fades to 0)
-//   - NEW page: slides in from right (x: 100% → 0) with spring physics
-//   - Old page is position:absolute so it doesn't push new page
-//   - Scroll resets to 0 in useLayoutEffect before paint
+// ── ARCHITECTURE ──
+// mode="wait": old page exits FIRST (instant), then new page enters (slide from right).
+// This avoids rendering both pages simultaneously (which causes lag on mobile).
+//
+// Flow on navigation:
+//   1. User clicks card → route changes
+//   2. useLayoutEffect fires → blur active input (prevents mobile scroll-into-view)
+//   3. AnimatePresence sees key changed → old page starts EXIT animation
+//   4. Exit is INSTANT (0ms) → old page vanishes from DOM immediately
+//   5. onExitComplete fires → scroll resets to 0 (window.scrollTo)
+//   6. New page mounts → ScrollResetter fires (useLayoutEffect, before paint)
+//   7. New page slides in from right (x: 100% → 0) with spring
+//
+// Why mode="wait" instead of mode="sync":
+//   - sync: both pages render simultaneously → double DOM size → lag on mobile
+//   - wait: only one page in DOM at a time → smooth, no jank
+//   - The "gap" between exit and enter is 0ms (instant exit) so user doesn't see blank
+//
+// Why instant exit:
+//   - A fade-out exit (0.3s) means the old page stays visible at its scroll position
+//     for 0.3s while the new page also renders → scroll conflict → jump
+//   - Instant exit: old page vanishes → scroll is free to reset → new page slides in clean
 
 import type { Variants, Transition } from "framer-motion";
 
@@ -19,7 +34,7 @@ export const pageTransitionSpring: Transition = {
 };
 
 export const pageVariants: Variants = {
-  // New page enters from the RIGHT — slides in over the old page
+  // New page enters from the RIGHT — slides in over where the old page was
   initial: {
     opacity: 0,
     x: "100%",
@@ -29,16 +44,13 @@ export const pageVariants: Variants = {
     x: 0,
     transition: pageTransitionSpring,
   },
-  // Old page: position absolute (floats underneath), fades out slightly.
-  // Stays in place — no movement, just opacity fade so the new page
-  // slides cleanly over it.
+  // EXIT: INSTANT (0ms) — old page vanishes immediately.
+  // With mode="wait", this means the old page is removed from DOM
+  // BEFORE the new page mounts. No scroll conflict, no double-render.
+  // The "gap" is invisible because the new page starts mounting instantly.
   exit: {
     opacity: 0,
-    position: "absolute" as const,
-    top: 0,
-    left: 0,
-    right: 0,
-    transition: { duration: 0.3, ease: [0.4, 0, 0.2, 1] },
+    transition: { duration: 0 },
   },
 };
 
