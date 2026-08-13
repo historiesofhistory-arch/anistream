@@ -525,22 +525,32 @@ const getSchedule = mkSwr<unknown>(30 * 60_000, 15 * 60_000, async (key: string)
     });
   }
 
-  // ── TIER 1 (OPTIONAL): Miruro API — upcoming episodes ────────────────────
-  // If USE_MIRURO_SCHEDULE=true, fetch UPCOMING episodes from the Miruro
-  // render.com API first. This API only returns nextAiringEpisode (upcoming),
-  // so we ALSO fetch from AniList for PAST episodes in the same week and
-  // merge them (deduplicating by animeId+episode).
+  // ── TIER 1 (OPTIONAL): Miruro API — PRIMARY source ───────────────────────
+  // If USE_MIRURO_SCHEDULE=true, Miruro is the PRIMARY schedule source.
+  // Miruro's API only returns nextAiringEpisode (upcoming episodes that
+  // haven't aired yet). It does NOT have past episodes that already aired.
   //
-  // If Miruro fails, we fall back to AniList for everything.
+  // To get the FULL week (past + upcoming), we:
+  //   1. Fetch ALL upcoming episodes from Miruro (fast, paginated REST API)
+  //   2. Fetch ALL episodes for the week from AniList (past + upcoming)
+  //   3. Merge: Miruro items take priority (more accurate nextAiringEpisode data)
+  //   4. Deduplicate by animeId-episode
+  //
+  // If Miruro fails completely → source = 'anilist' (AniList only, full week)
+  // If Miruro works → source = 'miruro' (primary, AniList fills gaps silently)
+  //
+  // The site is never affected — if Miruro is down, AniList takes over.
   const MIRURO_API_BASE = "https://miruro-api-original.onrender.com";
   const useMiruro = process.env.USE_MIRURO_SCHEDULE === "true";
   let source = "anilist";
-  const miruroKeys = new Set<string>();
+  const existingKeys = new Set<string>();
 
   if (useMiruro) {
     try {
+      // Fetch all Miruro pages for the week range (upcoming only)
       let page = 1;
       let pastWeek = false;
+      let miruroCount = 0;
 
       while (!pastWeek && page <= 15) {
         const res = await fetch(`${MIRURO_API_BASE}/schedule?page=${page}`, {
@@ -564,8 +574,9 @@ const getSchedule = mkSwr<unknown>(30 * 60_000, 15 * 60_000, async (key: string)
           if (!na || !na.airingAt) continue;
           if (na.airingAt >= s && na.airingAt <= e) {
             const key = `${item.id}-${na.episode}`;
-            if (!miruroKeys.has(key)) {
-              miruroKeys.add(key);
+            if (!existingKeys.has(key)) {
+              existingKeys.add(key);
+              miruroCount++;
               addScheduleItem(
                 item.id,
                 item.title.english ?? item.title.romaji ?? "Unknown",
@@ -584,8 +595,8 @@ const getSchedule = mkSwr<unknown>(30 * 60_000, 15 * 60_000, async (key: string)
         page++;
       }
 
-      if (miruroKeys.size > 0) {
-        source = "miruro+anilist";
+      if (miruroCount > 0) {
+        source = "miruro";
       }
     } catch {
       // Miruro failed — fall back to AniList for everything
@@ -593,16 +604,16 @@ const getSchedule = mkSwr<unknown>(30 * 60_000, 15 * 60_000, async (key: string)
     }
   }
 
-  // ── TIER 2: AniList GraphQL — always fetched ─────────────────────────────
-  // When USE_MIRURO_SCHEDULE=true: AniList fills in PAST episodes that Miruro
-  //   doesn't have (Miruro only has upcoming nextAiringEpisode).
-  // When USE_MIRURO_SCHEDULE=false: AniList provides ALL episodes (past + upcoming).
+  // ── TIER 2: AniList GraphQL — fills gaps (past episodes) ─────────────────
+  // ALWAYS fetched to fill in past episodes that Miruro doesn't have.
+  // When USE_MIRURO_SCHEDULE=false: AniList provides ALL episodes (full week).
+  // When USE_MIRURO_SCHEDULE=true: AniList fills in PAST episodes only.
   // Deduplicate: skip items already added by Miruro.
   {
     const allSchedules = await fetchAllAiringSchedules(s, e);
     for (const a of allSchedules) {
       const key = `${a.media.id}-${a.episode}`;
-      if (!miruroKeys.has(key)) {
+      if (!existingKeys.has(key)) {
         addScheduleItem(a.media.id, title(a.media), cover(a.media), a.episode, a.airingAt);
       }
     }
