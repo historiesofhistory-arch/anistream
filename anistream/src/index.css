@@ -142,28 +142,24 @@
   }
 
   /* Tap / press scale — hardware-accelerated, no layout shift.
-     Smooth ease-out on release — NO bouncy overshoot (the old 1.56 cubic-bezier
-     caused cards to scale above 1.0 briefly, creating a glitchy feel during
-     page transitions). Now uses a standard Material ease-out curve. */
+     Soft bouncy release with mild overshoot — feels "alive" when you
+     press and release a card/button. The 1.4 cubic-bezier gives a gentle
+     bounce-back without being too springy. */
   .tap-scale {
     -webkit-tap-highlight-color: transparent;
-    touch-action: manipulation;       /* prevents Android scroll-on-focus */
-    will-change: transform;           /* GPU compositing, no layout reflow  */
+    touch-action: manipulation;
+    will-change: transform;
     transform: translateZ(0);
-    /* Release: smooth ease-out — NO overshoot (was 1.56 which caused
-       the card to scale above 1.0 briefly, creating a "bouncy glitch"
-       feel during page transitions). Now uses a standard ease-out curve. */
-    transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+    /* Soft spring release — slight overshoot for alive feel */
+    transition: transform 0.28s cubic-bezier(0.34, 1.4, 0.64, 1);
   }
   .tap-scale:active {
-    transform: scale(0.96) translateZ(0);
-    /* Press: very fast snap-down for crisp squeeze feel */
-    transition-duration: 0.06s;
+    transform: scale(0.94) translateZ(0);
+    transition-duration: 0.07s;
     transition-timing-function: cubic-bezier(0.4, 0, 1, 1);
   }
-  /* Stronger squish for bigger tappable targets (buttons, CTAs) */
   .tap-scale-strong:active {
-    transform: scale(0.92) translateZ(0);
+    transform: scale(0.90) translateZ(0);
   }
 
   /* Line clamps */
