@@ -1,0 +1,94 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Build & push Docker image to GitHub Container Registry (GHCR)
+# ─────────────────────────────────────────────────────────────────────────────
+# On every push to main (or manual trigger), this workflow:
+#   1. Builds the Docker image using the repo's Dockerfile (unchanged)
+#   2. Tags it as `latest`, `:<commit-sha>`, and `:<timestamp>` for traceability
+#   3. Pushes it to ghcr.io/historiesofhistory-arch/anistream (PUBLIC, no auth)
+#
+# The image is a single container that serves BOTH:
+#   - The Express API (under /api/*)
+#   - The static frontend (everything else)
+# ...on a single port (default 8080, configurable via PORT env var).
+#
+# Koyeb / Railway / Render setup:
+#   1. Create a new service → "Deploy from Docker image"
+#   2. Image: ghcr.io/historiesofhistory-arch/anistream:latest
+#   3. Set env vars (EMBED_API_URL, USE_MIRURO_SCHEDULE, etc.)
+#   4. Set PORT to match the platform's expected port (or leave 8080)
+#   5. Enable "Auto redeploy when image is updated"
+#
+# After this, every `git push` to main → workflow rebuilds → Koyeb auto-pulls.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Build & Push Docker Image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:  # allow manual trigger from Actions tab
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write  # required to push to GHCR
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}  # auto-provided by GitHub Actions
+
+      - name: Extract metadata for image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=sha-,format=short
+            type=raw,value={{date 'YYYYMMDD-HHmmss'}}
+          labels: |
+            org.opencontainers.image.title=AniStream
+            org.opencontainers.image.description=Anime streaming site — single container serves API + frontend
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VITE_API_BASE_URL=
+
+      - name: Print image URL
+        run: |
+          echo "✅ Image pushed successfully"
+          echo "📦 Image URL: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          echo "🏷️  Also tagged as: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-$(echo ${{ github.sha }} | cut -c1-7)"
+          echo ""
+          echo "To use on Koyeb:"
+          echo "  1. Create new service → 'Deploy from Docker image'"
+          echo "  2. Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          echo "  3. Set PORT=8080 (or whatever Koyeb expects)"
+          echo "  4. Set env vars: EMBED_API_URL, USE_MIRURO_SCHEDULE=true, etc."
+          echo "  5. Enable 'Auto redeploy when image is updated'"
